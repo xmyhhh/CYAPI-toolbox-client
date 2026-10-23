@@ -156,7 +156,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Check the deployment secrets
+      # Without the secrets the job stays dormant; the manual website flow
+      # (fetch-release.mjs + deploy.sh) is the fallback.
+      - id: secrets
+        name: Check the deployment secrets
         env:
           MONOREPO_TOKEN: ${{ secrets.MONOREPO_TOKEN }}
           SITE_SSH_HOST: ${{ secrets.SITE_SSH_HOST }}
@@ -166,36 +169,43 @@ jobs:
           set -euo pipefail
           for name in MONOREPO_TOKEN SITE_SSH_HOST SITE_SSH_USER SITE_DEPLOY_KEY; do
             if [ -z "${!name}" ]; then
-              echo "::error::Secret $name is missing; configure it under Settings → Secrets and variables → Actions (see README.md)."
-              exit 1
+              echo "::notice::Secret $name is not configured; skipping the website deploy (manual flow: fetch-release.mjs + deploy.sh)."
+              echo "enabled=false" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
           done
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
 
-      - name: Check out the private website sources
+      - if: steps.secrets.outputs.enabled == 'true'
+        name: Check out the private website sources
         uses: actions/checkout@v4
         with:
           repository: xmyhhh/CYAPI-toolbox
           token: ${{ secrets.MONOREPO_TOKEN }}
 
-      - name: Check out the client repository
+      - if: steps.secrets.outputs.enabled == 'true'
+        name: Check out the client repository
         uses: actions/checkout@v4
         with:
           repository: xmyhhh/CYAPI-toolbox-client
           path: CYAPI-toolbox-client
 
-      - uses: actions/setup-node@v4
+      - if: steps.secrets.outputs.enabled == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: website/package-lock.json
 
-      - name: Download the released artifacts
+      - if: steps.secrets.outputs.enabled == 'true'
+        name: Download the released artifacts
         uses: actions/download-artifact@v4
         with:
           path: assets
           merge-multiple: true
 
-      - name: Stage the installers for the website build
+      - if: steps.secrets.outputs.enabled == 'true'
+        name: Stage the installers for the website build
         run: |
           set -euo pipefail
           mkdir -p CYAPI-toolbox-client/release
@@ -205,7 +215,8 @@ jobs:
       # The catalog server archive ships from the private repository. When
       # the release carries it, the website offers it for the new version;
       # otherwise that download stays on the manual server flow.
-      - name: Stage the catalog server archive from the release
+      - if: steps.secrets.outputs.enabled == 'true'
+        name: Stage the catalog server archive from the release
         run: |
           set -euo pipefail
           version="$(node -p "require('./CYAPI-toolbox-client/package.json').version")"
@@ -216,14 +227,17 @@ jobs:
             echo "::notice::The release carries no CYAPI-Skill-Server_${version}.zip; publish it later per DEPLOYMENT.md."
           fi
 
-      - run: npm ci
+      - if: steps.secrets.outputs.enabled == 'true'
+        run: npm ci
         working-directory: website
 
-      - name: Build the website
+      - if: steps.secrets.outputs.enabled == 'true'
+        name: Build the website
         run: npm run build
         working-directory: website
 
-      - name: Trust the server host key
+      - if: steps.secrets.outputs.enabled == 'true'
+        name: Trust the server host key
         env:
           SITE_SSH_HOST: ${{ secrets.SITE_SSH_HOST }}
         run: |
@@ -231,7 +245,8 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H "$SITE_SSH_HOST" >> ~/.ssh/known_hosts
 
-      - name: Deploy the website
+      - if: steps.secrets.outputs.enabled == 'true'
+        name: Deploy the website
         env:
           SITE_SSH_HOST: ${{ secrets.SITE_SSH_HOST }}
           SITE_SSH_USER: ${{ secrets.SITE_SSH_USER }}
@@ -245,6 +260,7 @@ jobs:
           CYAPI_IDENTITY_FILE=deploy_key \
             bash website/deploy/deploy.sh
 
-      - name: Remind about the server-side update manifest
+      - if: steps.secrets.outputs.enabled == 'true'
+        name: Remind about the server-side update manifest
         run: |
           echo '::notice::The website deploy does not touch the catalog server. Sync server/data/client-release*.json with the server flow if this release also ships a catalog server update.'
