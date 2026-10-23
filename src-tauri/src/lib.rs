@@ -22,6 +22,7 @@ mod python_runtime;
 mod runtime;
 mod service;
 mod software;
+mod telemetry;
 mod update;
 mod usage;
 
@@ -255,6 +256,9 @@ pub fn run() {
         format!("CYAPI Toolbox {} 启动", env!("CARGO_PKG_VERSION")),
     );
     let service = Service::from_environment();
+    if let Ok(service) = &service {
+        telemetry::start(service.data.clone(), service.server_url().to_string());
+    }
     if let Err(error) = &service {
         logging::event(
             "error",

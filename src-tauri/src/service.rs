@@ -2043,7 +2043,95 @@ exit 1
             )
         }
     }
+    fn receipt_operation(&self, request: &Request) -> Option<crate::telemetry::Operation> {
+        let operation_id = request
+            .operation_id
+            .as_deref()
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+            .unwrap_or_else(uuid::Uuid::new_v4)
+            .to_string();
+        let safe_target = |value: &str| match value {
+            "codex" | "claude" | "opencode" => value.to_string(),
+            _ => "none".into(),
+        };
+        match request.action.as_str() {
+            "download" | "install" | "update-skill" => {
+                let skill = self.skill(request.skill_id.as_deref()?).ok()?;
+                let cached = fs::read(self.package_path(&skill))
+                    .ok()
+                    .is_some_and(|bytes| validate_package(&bytes, &skill).is_ok());
+                Some(crate::telemetry::Operation {
+                    operation_id,
+                    item_id: skill.id,
+                    version: skill.version,
+                    action: match request.action.as_str() {
+                        "download" => "skill.download",
+                        "install" => "skill.install",
+                        _ => "skill.update",
+                    }
+                    .into(),
+                    target: if request.action == "download" {
+                        "none".into()
+                    } else {
+                        safe_target(request.target.as_deref().unwrap_or("codex"))
+                    },
+                    cache_hit: cached,
+                })
+            }
+            "mcp-install" | "mcp-adopt" => {
+                // Public catalog only: never send user-defined commands, URLs or local entries.
+                let catalog = crate::mcp::catalog(&self.data).ok()?;
+                let server = catalog
+                    .servers
+                    .into_iter()
+                    .find(|server| Some(server.id.as_str()) == request.server_id.as_deref())?;
+                Some(crate::telemetry::Operation {
+                    operation_id,
+                    item_id: server.id,
+                    version: server.version,
+                    action: if request.action == "mcp-install" {
+                        "mcp.attach"
+                    } else {
+                        "mcp.adopt"
+                    }
+                    .into(),
+                    target: safe_target(request.workspace.as_deref().unwrap_or("codex")),
+                    cache_hit: false,
+                })
+            }
+            _ => None,
+        }
+    }
     pub fn dispatch(&mut self, request: Request) -> Result<Value> {
+        match request.action.as_str() {
+            "telemetry-read" => {
+                return Ok(json!({"enabled": crate::telemetry::enabled(&self.data)}))
+            }
+            "telemetry-enable" | "telemetry-disable" => {
+                crate::telemetry::set_enabled(&self.data, request.action == "telemetry-enable")?;
+                return Ok(json!({"enabled": crate::telemetry::enabled(&self.data)}));
+            }
+            _ => {}
+        }
+        let operation = if crate::telemetry::enabled(&self.data) {
+            self.receipt_operation(&request)
+        } else {
+            None
+        };
+        let began = std::time::Instant::now();
+        let result = self.dispatch_inner(request);
+        if let Some(operation) = operation {
+            // Upload is handled by the independent outbox worker, never under the service lock.
+            let _ = crate::telemetry::record(
+                &self.data,
+                operation,
+                began.elapsed().as_millis() as u64,
+                result.as_ref().err().map(String::as_str),
+            );
+        }
+        result
+    }
+    fn dispatch_inner(&mut self, request: Request) -> Result<Value> {
         let id = request.skill_id.as_deref().unwrap_or("");
         let target = request.target.as_deref().unwrap_or("codex");
         let scope = request.scope.as_deref().unwrap_or("global");

@@ -187,6 +187,9 @@ export default function App() {
   const [completed, setCompleted] = useState<NativeRecord>();
   const [remove, setRemove] = useState<NativeRecord>();
   const [help, setHelp] = useState(false);
+  const [telemetryEnabled, setTelemetryEnabled] = useState<boolean>();
+  const [telemetryError, setTelemetryError] = useState('');
+  const [telemetryBusy, setTelemetryBusy] = useState(false);
   const [appVersion, setAppVersion] = useState(APP_VERSION);
   const [update, setUpdate] = useState<UpdateStatus>();
   const [updateHidden, setUpdateHidden] = useState(false);
@@ -209,9 +212,7 @@ export default function App() {
     onStatus: (next, target, installedEntries) => {
       setStatus(next);
       setWorkspace(target);
-      setSelectedCollection((current) =>
-        current ? { ...current, installedEntries } : current,
-      );
+      setSelectedCollection((current) => (current ? { ...current, installedEntries } : current));
     },
     installedEntriesFor: (next, collectionId, target, scope, skillPath) => {
       const group = next.skillGroups?.find((item) => item.id === collectionId);
@@ -311,7 +312,16 @@ export default function App() {
   }, [checkForUpdates]);
   useEffect(() => {
     // Opening settings always checks again, including previously skipped releases.
-    if (page === 'settings') void checkForUpdates(true);
+    if (page === 'settings') {
+      void checkForUpdates(true);
+      if (nativeAvailable)
+        void nativeCall<{ enabled: boolean }>('telemetry-read')
+          .then((value) => {
+            setTelemetryEnabled(value.enabled);
+            setTelemetryError('');
+          })
+          .catch(() => setTelemetryError('无法读取统计设置，请稍后重试。'));
+    }
   }, [page, checkForUpdates]);
   useEffect(() => {
     const current = ++planVersion.current;
@@ -718,7 +728,9 @@ export default function App() {
           </div>
           <small className="n-sidebar-meta">
             <span>v{appVersion}</span>
-            {update?.hasUpdate && !updateHidden && <span className="n-sidebar-update">有新版本</span>}
+            {update?.hasUpdate && !updateHidden && (
+              <span className="n-sidebar-update">有新版本</span>
+            )}
             <span className="n-sidebar-copyright">{COPYRIGHT_SHORT}</span>
           </small>
         </div>
@@ -1068,6 +1080,48 @@ export default function App() {
 
             {page === 'settings' && (
               <>
+                <section className="n-panel" aria-label="使用统计">
+                  <div className="n-panel-heading">
+                    <h2>使用统计</h2>
+                  </div>
+                  <p className="n-config-note">
+                    发送公开 Skill 的下载校验、安装与更新结果，以及公开 MCP
+                    的配置接入结果，用于改进服务。统计包含条目版本、平台、目标软件、耗时和随机设备标识；不包含
+                    API Key、命令、文件路径或模型请求。
+                  </p>
+                  <button
+                    className="n-button"
+                    disabled={!nativeAvailable || telemetryEnabled === undefined || telemetryBusy}
+                    onClick={async () => {
+                      setTelemetryBusy(true);
+                      setTelemetryError('');
+                      try {
+                        const value = await nativeCall<{ enabled: boolean }>(
+                          telemetryEnabled ? 'telemetry-disable' : 'telemetry-enable',
+                        );
+                        setTelemetryEnabled(value.enabled);
+                      } catch {
+                        setTelemetryError('无法保存统计设置，请稍后重试。');
+                      } finally {
+                        setTelemetryBusy(false);
+                      }
+                    }}
+                  >
+                    {telemetryBusy
+                      ? '正在保存…'
+                      : telemetryEnabled === undefined
+                        ? '正在读取…'
+                        : telemetryEnabled
+                          ? '关闭使用统计'
+                          : '开启使用统计'}
+                  </button>
+                  <p className="n-config-note">关闭后停止新增和发送回执，并清除本地待发送队列。</p>
+                  {telemetryError && (
+                    <p className="n-error-text" role="alert">
+                      {telemetryError}
+                    </p>
+                  )}
+                </section>
                 <section
                   className="n-panel n-update-panel"
                   aria-label="软件更新"
