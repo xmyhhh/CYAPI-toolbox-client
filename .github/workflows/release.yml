@@ -108,10 +108,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.asset }}
+          # Windows ships installer and portable EXE; macOS ships only the
+          # DMG, the portable ZIP bundle was retired.
           path: |
-            release/CYAPI-Toolbox_*.exe
-            release/CYAPI-Toolbox_*.dmg
-            release/CYAPI-Toolbox_*.zip
+            ${{ runner.os == 'Windows' && 'release/CYAPI-Toolbox_*.exe' || 'release/CYAPI-Toolbox_*.dmg' }}
           if-no-files-found: error
 
   release:

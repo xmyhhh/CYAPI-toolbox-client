@@ -29,7 +29,7 @@ npm run desktop:build  # 桌面安装包，输出到 release/
 
 ## 发版
 
-推送与 `package.json` 版本一致的 `v*` 标签（如 `v1.1.0`）触发 `.github/workflows/release.yml`：自动构建 Windows NSIS 安装包与免安装 EXE、macOS 双架构（Apple Silicon + Intel）DMG 与免安装 ZIP,发布到 GitHub Releases（含 SHA256SUMS.txt）,并以私钥部署官网下载区。测试构建用 `ci-*` 标签或 workflow_dispatch `dry-run`,只产 artifacts 不发版。
+推送与 `package.json` 版本一致的 `v*` 标签（如 `v1.1.0`）触发 `.github/workflows/release.yml`：自动构建 Windows NSIS 安装包与免安装 EXE、macOS 双架构（Apple Silicon + Intel）DMG,发布到 GitHub Releases（含 SHA256SUMS.txt）,并以私钥部署官网下载区。测试构建用 `ci-*` 标签或 workflow_dispatch `dry-run`,只产 artifacts 不发版。
 
 ## 官网自动部署的 Secrets
 

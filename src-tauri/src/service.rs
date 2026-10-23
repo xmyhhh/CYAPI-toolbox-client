@@ -33,6 +33,8 @@ const MAX_FILES: usize = 512;
 const MAX_DECODED: usize = 40_000_000;
 pub(crate) const SERVER_URL: &str = "https://api.cyapi.cyou";
 const SERVER_HOST: &str = "api.cyapi.cyou";
+/// The download host of release files; it shares the origin with the API host.
+const DOWNLOAD_HOST: &str = "tool.cyapi.cyou";
 const SERVER_ORIGIN_IP: [u8; 4] = [149, 104, 31, 54];
 fn err(e: impl std::fmt::Display) -> String {
     crate::logging::event("error", "native", e.to_string());
@@ -83,7 +85,10 @@ fn fetch_server_once(
     let builder = if direct_origin {
         builder
             .no_proxy()
-            .resolve(SERVER_HOST, SocketAddr::from((SERVER_ORIGIN_IP, 443)))
+            .resolve(
+                url.host_str().unwrap_or(SERVER_HOST),
+                SocketAddr::from((SERVER_ORIGIN_IP, 443)),
+            )
     } else {
         builder
     };
@@ -131,6 +136,21 @@ fn fetch_server_once(
 pub(crate) fn fetch_server_url(url: Url, limit: u64, timeout: u64) -> Result<Vec<u8>> {
     fetch_server_url_conditional(url, limit, timeout, None).map(|fetched| fetched.bytes)
 }
+/// Some networks cannot reach the project's Cloudflare-fronted domains, but
+/// they share one origin that answers directly and presents valid TLS for both
+/// names. The fallback therefore keeps the domain (SNI and certificate checks)
+/// and only swaps the DNS answer. The model API routes are not covered because
+/// that origin does not serve `www.cyapi.cyou`.
+fn can_bypass_cloudflare(url: &Url) -> bool {
+    url.scheme() == "https"
+        && url.port_or_known_default() == Some(443)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && matches!(
+            url.host_str(),
+            Some(SERVER_HOST) | Some(DOWNLOAD_HOST)
+        )
+}
 /// Ask the server for a file, sending the entity tag of the cached copy so an
 /// unchanged file costs one round trip instead of the whole payload.
 pub(crate) fn fetch_server_url_conditional(
@@ -139,16 +159,14 @@ pub(crate) fn fetch_server_url_conditional(
     timeout: u64,
     etag: Option<&str>,
 ) -> Result<Fetched> {
-    let can_bypass_cloudflare = url.scheme() == "https"
-        && url.host_str() == Some(SERVER_HOST)
-        && url.port_or_known_default() == Some(443);
+    let can_fallback = can_bypass_cloudflare(&url);
     match fetch_server_once(&url, limit, timeout, false, etag) {
         Ok(fetched) => Ok(fetched),
-        Err(primary_error) if can_bypass_cloudflare => {
+        Err(primary_error) if can_fallback => {
             crate::logging::event(
                 "warn",
                 "download",
-                format!("api.cyapi.cyou 请求失败，改为直连源站：{primary_error}"),
+                format!("Cloudflare 线路请求失败，改为直连源站：{primary_error}"),
             );
             fetch_server_once(&url, limit, timeout, true, etag).map_err(|fallback_error| {
                 format!("主线路失败：{primary_error}；源站直连失败：{fallback_error}")
@@ -2232,6 +2250,27 @@ exit 1
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloudflare_fallback_covers_the_project_hosts_only() {
+        let ok = |url: &str| {
+            assert!(can_bypass_cloudflare(&Url::parse(url).unwrap()), "{url}");
+        };
+        ok("https://api.cyapi.cyou/api/catalog");
+        ok("https://tool.cyapi.cyou/downloads/app.exe");
+        for url in [
+            "http://api.cyapi.cyou/api/catalog",
+            "https://api.cyapi.cyou:8443/api/catalog",
+            "https://www.cyapi.cyou/v1/models",
+            "https://api.cyapi.cyou.evil.example/api/catalog",
+            "https://user:pass@api.cyapi.cyou/api/catalog",
+        ] {
+            assert!(
+                !can_bypass_cloudflare(&Url::parse(url).unwrap()),
+                "不应回退：{url}"
+            );
+        }
+    }
 
     #[test]
     fn skill_groups_survive_refresh_cache_restart_and_metadata_updates() {

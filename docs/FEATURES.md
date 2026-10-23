@@ -1,6 +1,6 @@
 # CYAPI Toolbox Client
 
-独立桌面客户端，采用 **Tauri 2 + React + TypeScript + Vite**。负责 Skill 界面、运行环境检测、下载缓存、真实离线安装与卸载。支持 Windows 10 / 11 x64 与 macOS 11+（Apple Silicon 和 Intel）。服务端地址内置为 `https://api.cyapi.cyou`，桌面版和网页预览均自动连接，无需配置，界面不显示地址设置；客户端通过 HTTPS API 连接，不读取服务端项目目录。旧版 `settings.json` 中保存的地址不再生效。
+独立桌面客户端，采用 **Tauri 2 + React + TypeScript + Vite**。负责 Skill 界面、运行环境检测、下载缓存、真实离线安装与卸载。支持 Windows 10 / 11 x64 与 macOS 11+（Apple Silicon 和 Intel）。服务端地址内置为 `https://api.cyapi.cyou`，桌面版和网页预览均自动连接，无需配置，界面不显示地址设置；客户端通过 HTTPS API 连接，不读取服务端项目目录。旧版 `settings.json` 中保存的地址不再生效。部分网络无法访问 Cloudflare 线路时，客户端自动改用源站 IP（149.104.31.54）直连 `api.cyapi.cyou` 与 `tool.cyapi.cyou`，保持原域名与证书校验，仅替换 DNS 解析结果；模型接入线路（`www.cyapi.cyou` 及服务器分发的备用线路）不参与该回退，详见「Codex 配置 / CYAPI 专属」的线路分发说明。
 
 详细的功能、行为与边界说明见本文；入口、开发与发版流程见根目录 `README.md`。
 
