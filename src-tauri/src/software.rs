@@ -136,6 +136,14 @@ pub fn detect(descriptors: &[crate::integrations::Descriptor]) -> BTreeMap<Strin
 
 #[cfg(windows)]
 fn probe(declarations: &[Value]) -> Option<BTreeMap<String, Value>> {
+    windows_probe(declarations).map_err(|error| {
+        crate::logging::event("warn", "software", error);
+    }).ok()
+}
+
+#[cfg(windows)]
+fn windows_probe(declarations: &[Value]) -> Result<BTreeMap<String, Value>, String> {
+    use base64::Engine;
     use std::{
         io::Read,
         os::windows::process::CommandExt,
@@ -173,51 +181,66 @@ foreach ($target in $targets) {
 }
 ConvertTo-Json -InputObject $results -Depth 5 -Compress
 "#;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(
+        script.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>(),
+    );
     let mut child = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
         .env(
             "CYAPI_SOFTWARE_PROBES",
-            serde_json::to_string(declarations).ok()?,
+            serde_json::to_string(declarations).map_err(|error| error.to_string())?,
         )
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .creation_flags(0x08000000)
         .spawn()
-        .ok()?;
-    let output = child.stdout.take()?;
+        .map_err(|error| format!("无法启动 Windows 元数据探测：{error}"))?;
+    let output = child.stdout.take().ok_or("无法读取 Windows 元数据输出")?;
+    let stderr = child.stderr.take().ok_or("无法读取 Windows 元数据错误")?;
+    let errors = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.take(16_000).read_to_end(&mut bytes);
+        String::from_utf8_lossy(&bytes).to_string()
+    });
     let reader = std::thread::spawn(move || {
         let mut bytes = Vec::new();
         output.take(256_001).read_to_end(&mut bytes).ok()?;
         (bytes.len() <= 256_000).then_some(bytes)
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // A cold Windows PowerShell startup plus registry enumeration can exceed
+    // five seconds on a busy machine. Keep the probe bounded and diagnose failures.
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) => {
+            Ok(Some(status)) => {
                 let _ = reader.join();
-                return None;
+                return Err(format!("Windows 元数据探测失败（{status}）：{}", errors.join().unwrap_or_default()));
             }
-            Err(_) => {
+            Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = reader.join();
-                return None;
+                let _ = errors.join();
+                return Err(format!("无法等待 Windows 元数据探测：{error}"));
             }
             _ if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = reader.join();
-                return None;
+                let _ = errors.join();
+                return Err("Windows 元数据探测超时（15 秒）".into());
             }
             _ => std::thread::sleep(Duration::from_millis(25)),
         }
     }
-    let bytes = reader.join().ok()??;
+    let _ = errors.join();
+    let bytes = reader.join().map_err(|_| "Windows 元数据读取线程失败")?
+        .ok_or("Windows 元数据输出过大或无法读取")?;
     let text = std::str::from_utf8(&bytes)
-        .ok()?
+        .map_err(|error| format!("Windows 元数据编码无效：{error}"))?
         .trim_start_matches('\u{feff}');
-    serde_json::from_str(text).ok()
+    serde_json::from_str(text).map_err(|error| format!("Windows 元数据 JSON 无效：{error}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -321,7 +344,7 @@ mod tests {
         ];
         // The fixed probe treats catalog values as paths, never as script text.
         let result =
-            probe(&declarations).expect("Windows metadata probe must return structured output");
+            windows_probe(&declarations).expect("Windows metadata probe must return structured output");
         assert_eq!(result["fixture"]["found"], true);
         assert!(result["fixture"]["version"]
             .as_str()

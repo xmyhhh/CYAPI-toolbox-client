@@ -199,9 +199,16 @@ mod tests {
             tool("ffprobe", crate::platform::WINDOWS_X64),
             tool("ffmpeg", crate::platform::MACOS_ARM64),
             tool("ffprobe", crate::platform::MACOS_ARM64),
+            tool("ffmpeg", crate::platform::MACOS_X64),
+            tool("ffprobe", crate::platform::MACOS_X64),
+            tool("ffmpeg", crate::platform::LINUX_X64),
+            tool("ffprobe", crate::platform::LINUX_X64),
         ];
         assert!(validate(&tools).is_ok());
-        assert_eq!(applicable(&tools).len(), 2);
+        let applicable = applicable(&tools);
+        assert_eq!(applicable.len(), 2);
+        assert!(applicable.iter().all(|tool| tool.platform == crate::platform::current()));
+        assert_eq!(unavailable(&tools).len(), 6);
         // The same platform may not publish a tool twice.
         let mut duplicate = tools.clone();
         duplicate.push(tool("ffmpeg", crate::platform::MACOS_ARM64));

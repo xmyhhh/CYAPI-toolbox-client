@@ -86,7 +86,20 @@ jobs:
         run: npm test
 
       - name: Run the native tests
-        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml
+        shell: bash
+        run: |
+          if cargo test --locked --lib --manifest-path src-tauri/Cargo.toml > native-tests.log 2>&1; then
+            cat native-tests.log
+          else
+            cat native-tests.log
+            node --input-type=module -e '
+              import { readFileSync } from "node:fs";
+              const log = readFileSync("native-tests.log", "utf8");
+              const detail = log.slice(log.lastIndexOf("failures:")).slice(-20000);
+              console.log("::error::" + detail.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A"));
+            '
+            exit 1
+          fi
 
       # Windows: build both bundles and collect the release files.
       - name: Build the installer and the portable EXE

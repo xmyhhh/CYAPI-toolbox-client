@@ -121,14 +121,14 @@ mod tests {
 
     /// A gzip compressed tar archive with the layout the published runtime
     /// uses.
-    fn archive(interpreter: &str) -> Vec<u8> {
+    fn archive(interpreter: &[u8]) -> Vec<u8> {
         let mut builder = tar::Builder::new(Vec::new());
         let mut header = tar::Header::new_gnu();
         header.set_size(interpreter.len() as u64);
         header.set_mode(0o755);
         header.set_cksum();
         builder
-            .append_data(&mut header, "python/bin/python3.14", interpreter.as_bytes())
+            .append_data(&mut header, if cfg!(windows) { "python/python.exe" } else { "python/bin/python3.14" }, interpreter)
             .unwrap();
         let tar = builder.into_inner().unwrap();
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -149,12 +149,20 @@ mod tests {
     fn the_runtime_is_unpacked_and_its_interpreter_is_found() {
         let root = std::env::temp_dir().join(format!("cyapi-python-unpack-{}", now()));
         let _ = fs::remove_dir_all(&root);
-        let bytes = archive("#!/bin/sh\necho Python 3.14.8\n");
+        #[cfg(windows)]
+        let executable = fs::read(PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe")).unwrap();
+        #[cfg(not(windows))]
+        let executable = b"#!/bin/sh\necho Python 3.14.8\n".to_vec();
+        let bytes = archive(&executable);
         let installed = install(&root, &bytes, "3.14.8").unwrap();
         assert!(installed.is_file());
-        assert!(installed.ends_with("python/bin/python3.14"));
+        assert!(installed.ends_with(if cfg!(windows) { "python/python.exe" } else { "python/bin/python3.14" }));
         // The interpreter runs from the unpacked location.
-        let output = std::process::Command::new(&installed).output().unwrap();
+        let mut command = std::process::Command::new(&installed);
+        #[cfg(windows)]
+        command.args(["/d", "/c", "echo Python 3.14.8"]);
+        let output = command.output().unwrap();
+        assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("3.14.8"));
         // A second call reuses the unpacked runtime.
         let again = install(&root, &bytes, "3.14.8").unwrap();
