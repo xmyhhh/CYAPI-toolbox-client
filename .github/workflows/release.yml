@@ -42,7 +42,7 @@ jobs:
           - os: windows-latest
             asset: windows
             platform: x64
-          # macOS ships a DMG installer and a portable ZIP per architecture.
+          # macOS ships a DMG installer per architecture.
           - os: macos-latest
             asset: macos-arm64
             platform: aarch64
@@ -85,6 +85,9 @@ jobs:
       - name: Run the frontend tests
         run: npm test
 
+      - name: Run the native tests
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml
+
       # Windows: build both bundles and collect the release files.
       - name: Build the installer and the portable EXE
         if: runner.os == 'Windows'
@@ -119,6 +122,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       # The dry run still validates the publish pipeline up to the checksums,
       # only the release itself is skipped.
       - uses: actions/download-artifact@v4
@@ -138,6 +143,8 @@ jobs:
         if: env.DRY_RUN != 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          body_path: RELEASE_NOTES.md
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
@@ -189,6 +196,7 @@ jobs:
         with:
           repository: xmyhhh/CYAPI-toolbox-client
           path: CYAPI-toolbox-client
+          ref: ${{ github.sha }}
 
       - if: steps.secrets.outputs.enabled == 'true'
         uses: actions/setup-node@v4

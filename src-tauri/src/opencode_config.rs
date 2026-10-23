@@ -17,7 +17,6 @@ type Result<T> = std::result::Result<T, String>;
 const PROVIDER: &str = "cyapi";
 const PROVIDER_NPM: &str = "@ai-sdk/openai-compatible";
 const MODEL_ALIAS: &str = "default";
-const MODEL_REFERENCE: &str = "cyapi/default";
 
 /// A config directory and an explicit OPENCODE_CONFIG file have different
 /// semantics. An explicit file may have any name and need not exist yet.
@@ -52,6 +51,10 @@ pub struct Input {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    #[serde(default)]
+    pub models: Option<Vec<String>>,
+    #[serde(default)]
+    pub reasoning_effort: String,
     pub revision: String,
 }
 
@@ -212,18 +215,52 @@ fn base_url(doc: &Value) -> Option<&str> {
         .or_else(|| text_at(provider, &["options", "api"]))
 }
 
+fn model_entries(doc: &Value) -> Option<&serde_json::Map<String, Value>> {
+    provider_of(doc)?.get("models")?.as_object()
+}
+
+fn model_id<'a>(alias: &'a str, entry: &'a Value) -> &'a str {
+    text_at(entry, &["id"]).unwrap_or(alias)
+}
+
+fn model_alias(doc: &Value) -> Option<&str> {
+    text_at(doc, &["model"])?
+        .strip_prefix("cyapi/")?
+        .split('#')
+        .next()
+}
+
 fn model(doc: &Value) -> Option<&str> {
-    let provider = provider_of(doc)?;
-    provider
-        .pointer(&format!("/models/{MODEL_ALIAS}/id"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            text_at(doc, &["model"])
-                .and_then(|value| value.strip_prefix("cyapi/"))
-                .filter(|value| *value != MODEL_ALIAS)
+    if let Some(alias) = model_alias(doc) {
+        return Some(
+            model_entries(doc)
+                .and_then(|entries| entries.get(alias))
+                .map(|entry| model_id(alias, entry))
+                .unwrap_or(alias),
+        );
+    }
+    model_entries(doc)?
+        .get(MODEL_ALIAS)
+        .map(|entry| model_id(MODEL_ALIAS, entry))
+}
+
+fn selected_models(doc: &Value) -> Vec<String> {
+    model_entries(doc)
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|(alias, entry)| model_id(alias, entry).to_string())
+                .collect()
         })
+        .unwrap_or_default()
+}
+
+fn reasoning_effort(doc: &Value) -> &str {
+    let alias = model_alias(doc).unwrap_or(MODEL_ALIAS);
+    model_entries(doc)
+        .and_then(|entries| entries.get(alias))
+        .and_then(|entry| text_at(entry, &["options", "reasoningEffort"]))
+        .unwrap_or("")
 }
 
 pub(crate) fn detect_cli() -> (bool, String) {
@@ -316,6 +353,8 @@ fn snapshot_view(data: &Path, snapshot: &Snapshot, secret: bool) -> Result<Value
         "revision": revision(snapshot),
         "baseUrl": base_url(&doc).unwrap_or(""),
         "model": model(&doc).unwrap_or(""),
+        "models": selected_models(&doc),
+        "reasoningEffort": reasoning_effort(&doc),
         "apiKeyConfigured": key.is_some(),
         "authMode": if key.is_some() { "API Key" } else { "未配置" },
         "settingsExists": snapshot.bytes.is_some(),
@@ -350,6 +389,8 @@ fn normalize_url(raw: &str) -> String {
 }
 
 fn validate(input: &Input) -> Result<()> {
+    crate::model_selection::models(&input.model, input.models.as_deref().unwrap_or_default())?;
+    crate::model_selection::effort(&input.reasoning_effort, crate::model_selection::EFFORTS)?;
     let url = reqwest::Url::parse(&normalize_url(&input.base_url)).map_err(|_| "API 地址无效")?;
     if !["http", "https"].contains(&url.scheme())
         || url.host_str().is_none()
@@ -469,13 +510,67 @@ pub fn save_at(location: &Location, data: &Path, input: &Input) -> Result<Value>
     let models = cyapi
         .object_value_or_create("models")
         .ok_or("OpenCode 配置的 provider.cyapi.models 必须是 JSON 对象")?;
-    let entry = models
-        .object_value_or_create(MODEL_ALIAS)
-        .ok_or("OpenCode 配置的 provider.cyapi.models.default 必须是 JSON 对象")?;
-    set_string(&entry, "id", model);
-    set_string(&entry, "name", &format!("CYAPI · {model}"));
-
-    set_string(&object, "model", MODEL_REFERENCE);
+    let selected = crate::model_selection::models(
+        model,
+        input.models.as_deref().unwrap_or(&selected_models(&doc)),
+    )?;
+    let existing = model_entries(&doc);
+    let mut aliases = Vec::new();
+    let mut default_alias = String::new();
+    for id in selected {
+        let alias = existing
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|(alias, entry)| model_id(alias, entry) == id)
+            })
+            .map(|(alias, _)| alias.clone())
+            .unwrap_or_else(|| {
+                if id == model && existing.is_none_or(|entries| !entries.contains_key(MODEL_ALIAS))
+                {
+                    MODEL_ALIAS.to_string()
+                } else if existing.is_some_and(|entries| entries.contains_key(&id))
+                    || id == MODEL_ALIAS
+                    || id.contains('#')
+                {
+                    format!("model-{}", crate::service::hash(id.as_bytes()))
+                } else {
+                    id.clone()
+                }
+            });
+        let entry = models
+            .object_value_or_create(&alias)
+            .ok_or("OpenCode 模型配置必须是 JSON 对象")?;
+        set_string(&entry, "id", &id);
+        if entry.get("name").is_none() {
+            set_string(&entry, "name", &format!("CYAPI · {id}"));
+        }
+        let options = entry
+            .object_value_or_create("options")
+            .ok_or("OpenCode 模型 options 必须是 JSON 对象")?;
+        if input.reasoning_effort.is_empty() {
+            if let Some(prop) = options.get("reasoningEffort") {
+                prop.remove();
+            }
+        } else {
+            set_string(&options, "reasoningEffort", &input.reasoning_effort);
+            if entry.get("reasoning").is_none() {
+                entry.append("reasoning", CstInputValue::Bool(true));
+            }
+        }
+        if id == model {
+            default_alias = alias.clone();
+        }
+        aliases.push(alias);
+    }
+    if let Some(existing) = existing {
+        for alias in existing.keys().filter(|alias| !aliases.contains(alias)) {
+            if let Some(prop) = models.get(alias) {
+                prop.remove();
+            }
+        }
+    }
+    set_string(&object, "model", &format!("{PROVIDER}/{default_alias}"));
 
     let mut bytes = root_node.to_string().into_bytes();
     if !bytes.ends_with(b"\n") {
@@ -570,6 +665,8 @@ mod tests {
         Input {
             base_url: "https://example.invalid/v1/".into(),
             api_key: "dummy-api-key".into(),
+            models: None,
+            reasoning_effort: "".into(),
             model: "example/model".into(),
             revision: view["revision"].as_str().unwrap().into(),
         }
@@ -762,6 +859,91 @@ mod tests {
         assert_eq!(current["model"], "read-model");
         assert_eq!(current["apiKeyConfigured"], true);
         assert!(current.get("apiKey").is_none());
+        fs::remove_dir_all(base).unwrap();
+    }
+    #[test]
+    fn multiple_models_switch_default_preserve_options_and_remove_deselected_models() {
+        let (base, root, data) = fixture();
+        let original = br#"{ // keep comment
+          "model":"cyapi/default",
+          "provider":{
+            "other":{"name":"keep"},
+            "cyapi":{"options":{"apiKey":"dummy-key"},"models":{
+              "default":{"id":"model-a","name":"My A","options":{"reasoningEffort":"low","temperature":0.2},"variants":{"deep":{"reasoningEffort":"high"}}},
+              "old":{"id":"remove-me"}
+            }}
+          },
+          "mcp":{"keep":{}}
+        }"#;
+        fs::write(root.join("opencode.jsonc"), original).unwrap();
+        let before = view(&root, &data).unwrap();
+        assert_eq!(before["model"], "model-a");
+        assert_eq!(before["reasoningEffort"], "low");
+        let mut change = input(&before);
+        change.model = "vendor/model-b".into();
+        change.models = Some(vec![
+            "model-a".into(),
+            "vendor/model-b".into(),
+            "model-a".into(),
+        ]);
+        change.reasoning_effort = "xhigh".into();
+        let saved = save(&root, &data, &change).unwrap();
+        assert_eq!(saved["model"], "vendor/model-b");
+        assert_eq!(saved["reasoningEffort"], "xhigh");
+        let text = fs::read_to_string(root.join("opencode.jsonc")).unwrap();
+        assert!(text.contains("// keep comment"));
+        let doc: Value =
+            jsonc_parser::parse_to_serde_value(&text, &ParseOptions::default()).unwrap();
+        let entries = &doc["provider"]["cyapi"]["models"];
+        assert_eq!(entries.as_object().unwrap().len(), 2);
+        assert!(entries.get("old").is_none());
+        assert_eq!(entries["default"]["name"], "My A");
+        assert_eq!(entries["default"]["options"]["temperature"], 0.2);
+        assert_eq!(entries["default"]["options"]["reasoningEffort"], "xhigh");
+        assert_eq!(
+            entries["default"]["variants"]["deep"]["reasoningEffort"],
+            "high"
+        );
+        assert_eq!(doc["model"], "cyapi/vendor/model-b");
+        assert_eq!(doc["provider"]["other"]["name"], "keep");
+        let mut next = input(&saved);
+        next.model = "model-a".into();
+        next.models = Some(vec!["model-a".into(), "vendor/model-b".into()]);
+        next.reasoning_effort.clear();
+        let switched = save(&root, &data, &next).unwrap();
+        assert_eq!(switched["model"], "model-a");
+        assert_eq!(switched["reasoningEffort"], "");
+        let doc: Value = jsonc_parser::parse_to_serde_value(
+            &fs::read_to_string(root.join("opencode.jsonc")).unwrap(),
+            &ParseOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(doc["model"], "cyapi/default");
+        assert!(doc["provider"]["cyapi"]["models"]["default"]["options"]
+            .get("reasoningEffort")
+            .is_none());
+        // Restore returns to the complete previous selection and its effort.
+        let restored = restore(&root, &data, switched["revision"].as_str().unwrap()).unwrap();
+        assert_eq!(restored["models"], saved["models"]);
+        assert_eq!(restored["reasoningEffort"], "xhigh");
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn invalid_model_lists_and_efforts_do_not_create_files_or_backups() {
+        let (base, root, data) = fixture();
+        let before = view(&root, &data).unwrap();
+        for (models, effort) in [
+            (vec!["bad\nmodel".into()], "high"),
+            (vec!["valid".into()], "invalid"),
+        ] {
+            let mut invalid = input(&before);
+            invalid.models = Some(models);
+            invalid.reasoning_effort = effort.into();
+            assert!(save(&root, &data, &invalid).is_err());
+            assert!(!root.join("opencode.json").exists());
+            assert!(!backup_path(&data).exists());
+        }
         fs::remove_dir_all(base).unwrap();
     }
 }

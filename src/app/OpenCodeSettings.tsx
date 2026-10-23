@@ -23,6 +23,7 @@ import type { CyapiRoutesView } from '../lib/api/cyapi';
 import { CyapiRoutes } from './CyapiRoutes';
 import { CyapiBalance } from './CyapiBalance';
 import { ModelPicker } from './ModelPicker';
+import { ReasoningEffortPicker } from './ReasoningEffortPicker';
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const preview: OpenCodeConfiguration = {
@@ -30,6 +31,8 @@ const preview: OpenCodeConfiguration = {
   revision: '',
   baseUrl: '',
   model: '',
+  models: [],
+  reasoningEffort: '',
   apiKeyConfigured: false,
   authMode: '网页预览',
   settingsExists: false,
@@ -44,6 +47,8 @@ export function OpenCodeSettings() {
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [model, setModel] = useState('');
+  const [models, setModels] = useState<string[]>([]);
+  const [effort, setEffort] = useState('');
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState<{ text: string; error?: boolean }>();
   const [restartPrompt, setRestartPrompt] = useState(false);
@@ -62,11 +67,11 @@ export function OpenCodeSettings() {
     setBaseUrl(url);
     modeTouched.current = false;
     setMode(
-      routes.manifest.routes.some((route) => sameRoute(url, route.baseUrl))
-        ? 'cyapi'
-        : 'custom',
+      routes.manifest.routes.some((route) => sameRoute(url, route.baseUrl)) ? 'cyapi' : 'custom',
     );
     setModel(next.model);
+    setModels(next.models ?? []);
+    setEffort(next.reasoningEffort ?? '');
     setApiKey(savedKey ?? '');
     setShowKey(false);
   }
@@ -104,7 +109,10 @@ export function OpenCodeSettings() {
 
   useEffect(() => {
     let active = true;
-    (nativeAvailable ? nativeCall<OpenCodeConfiguration>('opencode-read') : Promise.resolve(preview))
+    (nativeAvailable
+      ? nativeCall<OpenCodeConfiguration>('opencode-read')
+      : Promise.resolve(preview)
+    )
       .then((next) => {
         if (active) apply(next);
       })
@@ -140,10 +148,19 @@ export function OpenCodeSettings() {
     try {
       apply(
         await nativeCall<OpenCodeConfiguration>('opencode-save', {
-          opencode: { baseUrl, apiKey, model, revision: view.revision },
+          opencode: {
+            baseUrl,
+            apiKey,
+            model,
+            models,
+            reasoningEffort: effort,
+            revision: view.revision,
+          },
         }),
       );
-      setNotice({ text: '已写入 OpenCode 配置。请完全关闭 OpenCode（包括后台进程）后重新启动，配置才会生效。' });
+      setNotice({
+        text: '已写入 OpenCode 配置。请完全关闭 OpenCode（包括后台进程）后重新启动，配置才会生效。',
+      });
       setRestartPrompt(true);
     } catch (error) {
       setNotice({ text: errorText(error), error: true });
@@ -291,6 +308,8 @@ export function OpenCodeSettings() {
             id="opencode-model"
             value={model}
             onChange={setModel}
+            selectedModels={models}
+            onModelsChange={setModels}
             baseUrl={baseUrl}
             apiKey={apiKey}
             api="openai"
@@ -298,6 +317,7 @@ export function OpenCodeSettings() {
             required
             placeholder="填写服务商提供的模型 ID，如 gpt-5.1-codex"
           />
+          <ReasoningEffortPicker id="opencode-effort" value={effort} onChange={setEffort} />
         </fieldset>
         <p className="n-config-note">
           OpenCode 使用 OpenAI 兼容接口，API 地址通常以 /v1 结尾。保存时保留 JSONC
@@ -341,10 +361,7 @@ export function OpenCodeSettings() {
         </details>
       )}
       {restartPrompt && (
-        <RestartPrompt
-          target="OpenCode（包括后台进程）"
-          onClose={() => setRestartPrompt(false)}
-        />
+        <RestartPrompt target="OpenCode（包括后台进程）" onClose={() => setRestartPrompt(false)} />
       )}
     </section>
   );

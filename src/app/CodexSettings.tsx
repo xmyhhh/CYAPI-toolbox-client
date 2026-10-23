@@ -23,8 +23,8 @@ import type { CyapiRoutesView } from '../lib/api/cyapi';
 import { CyapiRoutes } from './CyapiRoutes';
 import { CyapiBalance } from './CyapiBalance';
 import { ModelPicker } from './ModelPicker';
+import { ReasoningEffortPicker } from './ReasoningEffortPicker';
 
-const efforts = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const preview: CodexConfiguration = {
   configPath: '%CODEX_HOME%\\config.toml',
@@ -33,6 +33,7 @@ const preview: CodexConfiguration = {
   provider: 'openai',
   baseUrl: CYAPI_DEFAULT_URL,
   model: '',
+  models: [],
   reasoningEffort: '',
   apiKeyConfigured: false,
   authMode: '网页预览',
@@ -45,6 +46,7 @@ export function CodexSettings() {
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [model, setModel] = useState('');
+  const [models, setModels] = useState<string[]>([]);
   const [effort, setEffort] = useState('');
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState<{ text: string; error?: boolean }>();
@@ -70,6 +72,7 @@ export function CodexSettings() {
     modeTouched.current = false;
     setMode(sameRoute(url, CYAPI_DEFAULT_URL) ? 'cyapi' : 'custom');
     setModel(next.model);
+    setModels(next.models ?? []);
     setEffort(next.reasoningEffort);
     setApiKey(savedKey ?? '');
     setShowKey(false);
@@ -142,6 +145,7 @@ export function CodexSettings() {
             baseUrl,
             apiKey,
             model,
+            models,
             reasoningEffort: effort,
             revision: view.revision,
             saveRevision: view.saveRevision,
@@ -301,34 +305,20 @@ export function CodexSettings() {
             {mode === 'cyapi' && (
               <CyapiBalance baseUrl={baseUrl} apiKey={apiKey} disabled={busy || !view} />
             )}
-            <div className="n-codex-model-row">
-              <ModelPicker
-                id="codex-model"
-                value={model}
-                onChange={setModel}
-                baseUrl={baseUrl}
-                apiKey={apiKey}
-                api="openai"
-                disabled={busy || !view}
-                required
-                placeholder="服务商提供的模型 ID"
-              />
-              <div className="n-config-field">
-                <label htmlFor="codex-effort">推理强度</label>
-                <select
-                  id="codex-effort"
-                  value={effort}
-                  onChange={(e) => setEffort(e.target.value)}
-                >
-                  {!efforts.includes(effort) && <option value={effort}>{effort}</option>}
-                  {efforts.map((value) => (
-                    <option key={value} value={value}>
-                      {value || '默认'}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
+            <ModelPicker
+              id="codex-model"
+              value={model}
+              onChange={setModel}
+              selectedModels={models}
+              onModelsChange={setModels}
+              baseUrl={baseUrl}
+              apiKey={apiKey}
+              api="openai"
+              disabled={busy || !view}
+              required
+              placeholder="服务商提供的模型 ID"
+            />
+            <ReasoningEffortPicker id="codex-effort" value={effort} onChange={setEffort} />
           </fieldset>
           <p className="n-config-note">
             支持 Responses API。保存前自动备份，API Key 仅保存在本机。保存后需完全关闭 Codex

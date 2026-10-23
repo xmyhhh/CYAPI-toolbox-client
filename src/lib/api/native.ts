@@ -132,6 +132,7 @@ export interface CodexConfiguration {
   provider: string;
   baseUrl: string;
   model: string;
+  models: string[];
   reasoningEffort: string;
   apiKeyConfigured: boolean;
   apiKey?: string;
@@ -143,6 +144,8 @@ export interface ClaudeConfiguration {
   revision: string;
   baseUrl: string;
   model: string;
+  models: string[];
+  reasoningEffort: string;
   authTokenConfigured: boolean;
   authToken?: string;
   apiKeyConfigured: boolean;
@@ -157,6 +160,8 @@ export interface OpenCodeConfiguration {
   revision: string;
   baseUrl: string;
   model: string;
+  models: string[];
+  reasoningEffort: string;
   apiKeyConfigured: boolean;
   apiKey?: string;
   authMode: string;
@@ -412,7 +417,8 @@ export async function cancelNativeOperation() {
   }
 }
 
-export async function browserCatalog(): Promise<NativeStatus> {  const response = await fetch(`${SERVER_URL}/api/catalog`);
+export async function browserCatalog(): Promise<NativeStatus> {
+  const response = await fetch(`${SERVER_URL}/api/catalog`);
   if (!response.ok) throw new Error('服务暂不可用，请稍后重试。');
   const catalog = (await response.json()) as {
     skills: ServerSkill[];

@@ -1,5 +1,5 @@
 //! Claude Code API configuration through the `env` block of `settings.json`.
-//! Only the three gateway fields managed by the toolbox are touched; every other
+//! The gateway, model picker, default model, and effort settings are managed; every other
 //! key in the file is preserved, and the previous file is kept for restoration.
 use crate::configuration::{no_links, read_bytes, stage};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -23,6 +23,10 @@ pub struct Input {
     pub base_url: String,
     pub auth_token: String,
     pub model: String,
+    #[serde(default)]
+    pub models: Option<Vec<String>>,
+    #[serde(default)]
+    pub reasoning_effort: String,
     pub revision: String,
 }
 
@@ -126,6 +130,41 @@ fn text<'a>(env: Option<&'a Map<String, Value>>, key: &str) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
+fn default_model(doc: &Value) -> &str {
+    text(env_of(doc), MODEL)
+        .or_else(|| doc.get("model").and_then(Value::as_str))
+        .unwrap_or("")
+}
+
+fn selected_models(doc: &Value) -> Vec<String> {
+    doc.pointer("/modelPicker/options")
+        .and_then(Value::as_array)
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|entry| {
+                    entry
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn reasoning_effort(doc: &Value) -> &str {
+    text(env_of(doc), "CLAUDE_CODE_EFFORT_LEVEL")
+        .or_else(|| {
+            doc.get("modelSettings")
+                .and_then(|settings| settings.get(default_model(doc)))
+                .and_then(|entry| entry.get("effortLevel"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| doc.get("effortLevel").and_then(Value::as_str))
+        .unwrap_or("")
+}
+
 fn detect_cli() -> (bool, String) {
     #[cfg(windows)]
     {
@@ -184,7 +223,9 @@ fn snapshot_view(root: &Path, data: &Path, snapshot: &Snapshot, secret: bool) ->
         "configPath": config_path(root),
         "revision": revision(snapshot),
         "baseUrl": text(env, BASE_URL).unwrap_or(""),
-        "model": text(env, MODEL).unwrap_or(""),
+        "model": default_model(&doc),
+        "models": selected_models(&doc),
+        "reasoningEffort": reasoning_effort(&doc),
         "authTokenConfigured": token.is_some(),
         "apiKeyConfigured": text(env, API_KEY).is_some(),
         "authMode": auth_mode,
@@ -215,6 +256,11 @@ fn normalize_url(raw: &str) -> String {
 }
 
 fn validate(input: &Input) -> Result<()> {
+    crate::model_selection::models(&input.model, input.models.as_deref().unwrap_or_default())?;
+    crate::model_selection::effort(
+        &input.reasoning_effort,
+        &["", "low", "medium", "high", "xhigh"],
+    )?;
     let url = reqwest::Url::parse(&normalize_url(&input.base_url)).map_err(|_| "API 地址无效")?;
     if !["http", "https"].contains(&url.scheme())
         || url.host_str().is_none()
@@ -283,6 +329,10 @@ pub fn save(root: &Path, data: &Path, input: &Input) -> Result<Value> {
     } else {
         input.auth_token.trim().to_string()
     };
+    let selected = crate::model_selection::models(
+        &input.model,
+        input.models.as_deref().unwrap_or(&selected_models(&doc)),
+    )?;
     let object = doc
         .as_object_mut()
         .ok_or("settings.json 必须是 JSON 对象")?;
@@ -299,6 +349,71 @@ pub fn save(root: &Path, data: &Path, input: &Input) -> Result<Value> {
         env.remove(MODEL);
     } else {
         env.insert(MODEL.into(), json!(input.model.trim()));
+    }
+    // Keep the launch-time override in sync as well, including model aliases
+    // whose canonical modelSettings key is resolved by Claude Code at runtime.
+    if input.reasoning_effort.is_empty() {
+        env.remove("CLAUDE_CODE_EFFORT_LEVEL");
+    } else {
+        env.insert(
+            "CLAUDE_CODE_EFFORT_LEVEL".into(),
+            json!(input.reasoning_effort),
+        );
+    }
+    if input.model.trim().is_empty() {
+        object.remove("model");
+    } else {
+        object.insert("model".into(), json!(input.model.trim()));
+    }
+    if input.models.is_some() {
+        let picker = object
+            .entry("modelPicker")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or("modelPicker 必须是 JSON 对象")?;
+        let previous = picker
+            .get("options")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let options: Vec<Value> = selected
+            .iter()
+            .map(|id| {
+                previous
+                    .iter()
+                    .find(|entry| entry.get("model").and_then(Value::as_str) == Some(id))
+                    .cloned()
+                    .unwrap_or_else(|| json!({"model":id}))
+            })
+            .collect();
+        picker.insert("options".into(), json!(options));
+    }
+    if input.reasoning_effort.is_empty() {
+        object.remove("effortLevel");
+    } else {
+        object.insert("effortLevel".into(), json!(input.reasoning_effort));
+    }
+    // Current Claude Code saves effort per model; keep those overrides in sync too.
+    if !input.reasoning_effort.is_empty() || object.contains_key("modelSettings") {
+        let settings = object
+            .entry("modelSettings")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or("modelSettings 必须是 JSON 对象")?;
+        for id in &selected {
+            if input.reasoning_effort.is_empty() {
+                if let Some(entry) = settings.get_mut(id).and_then(Value::as_object_mut) {
+                    entry.remove("effortLevel");
+                }
+            } else {
+                let entry = settings
+                    .entry(id)
+                    .or_insert_with(|| json!({}))
+                    .as_object_mut()
+                    .ok_or("模型思考等级配置必须是 JSON 对象")?;
+                entry.insert("effortLevel".into(), json!(input.reasoning_effort));
+            }
+        }
     }
     let mut bytes = serde_json::to_vec_pretty(&doc).map_err(|_| "无法生成 settings.json")?;
     bytes.push(b'\n');
@@ -372,6 +487,8 @@ mod tests {
         Input {
             base_url: "https://example.invalid/v1/".into(),
             auth_token: "dummy-auth-token".into(),
+            models: None,
+            reasoning_effort: "".into(),
             model: "claude-example".into(),
             revision: view["revision"].as_str().unwrap().into(),
         }
@@ -492,6 +609,75 @@ mod tests {
         let error = save(&root, &data, &input(&before)).unwrap_err();
         assert!(error.contains("env"));
         assert_eq!(fs::read(root.join("settings.json")).unwrap(), settings);
+        fs::remove_dir_all(base).unwrap();
+    }
+    #[test]
+    fn multiple_models_and_effort_roundtrip_preserve_picker_metadata_and_restore() {
+        let (base, root, data) = fixture();
+        let original = br#"{
+          "env":{"ANTHROPIC_BASE_URL":"https://old.invalid", "ANTHROPIC_MODEL":"model-a", "CLAUDE_CODE_EFFORT_LEVEL":"low", "KEEP":"yes"},
+          "modelPicker":{"replaceBuiltInOptions":true,"options":[{"model":"model-a","label":"My A","description":"keep"}]},
+          "modelSettings":{"model-a":{"effortLevel":"low","autoCompactWindow":200000},"other":{"effortLevel":"medium"}},
+          "permissions":{"allow":["Read"]}
+        }"#;
+        fs::write(root.join("settings.json"), original).unwrap();
+        let before = view(&root, &data).unwrap();
+        assert_eq!(before["reasoningEffort"], "low");
+        let mut change = input(&before);
+        change.model = "model-b".into();
+        change.models = Some(vec!["model-a".into(), "model-b".into(), "model-a".into()]);
+        change.reasoning_effort = "high".into();
+        let saved = save(&root, &data, &change).unwrap();
+        assert_eq!(saved["model"], "model-b");
+        assert_eq!(saved["models"], json!(["model-a", "model-b"]));
+        assert_eq!(saved["reasoningEffort"], "high");
+        let doc: Value =
+            serde_json::from_slice(&fs::read(root.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(doc["model"], "model-b");
+        assert_eq!(doc["env"]["ANTHROPIC_MODEL"], "model-b");
+        assert_eq!(doc["env"]["CLAUDE_CODE_EFFORT_LEVEL"], "high");
+        assert_eq!(doc["env"]["KEEP"], "yes");
+        assert_eq!(doc["modelPicker"]["options"][0]["label"], "My A");
+        assert_eq!(doc["modelPicker"]["replaceBuiltInOptions"], true);
+        assert_eq!(doc["modelSettings"]["model-a"]["effortLevel"], "high");
+        assert_eq!(doc["modelSettings"]["model-a"]["autoCompactWindow"], 200000);
+        assert_eq!(doc["modelSettings"]["other"]["effortLevel"], "medium");
+        assert_eq!(doc["permissions"]["allow"], json!(["Read"]));
+        restore(&root, &data, saved["revision"].as_str().unwrap()).unwrap();
+        assert_eq!(fs::read(root.join("settings.json")).unwrap(), original);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn clearing_effort_removes_overrides_and_invalid_choices_never_write() {
+        let (base, root, data) = fixture();
+        let before = view(&root, &data).unwrap();
+        let mut change = input(&before);
+        change.models = Some(vec!["extra-model".into()]);
+        change.reasoning_effort = "xhigh".into();
+        let saved = save(&root, &data, &change).unwrap();
+        let mut clear = input(&saved);
+        clear.models = Some(vec!["extra-model".into()]);
+        clear.reasoning_effort.clear();
+        let saved = save(&root, &data, &clear).unwrap();
+        assert_eq!(saved["reasoningEffort"], "");
+        let doc: Value =
+            serde_json::from_slice(&fs::read(root.join("settings.json")).unwrap()).unwrap();
+        assert!(doc.get("effortLevel").is_none());
+        assert!(doc["modelSettings"]["extra-model"]
+            .get("effortLevel")
+            .is_none());
+        let original = fs::read(root.join("settings.json")).unwrap();
+        for (models, effort) in [
+            (vec!["bad\nmodel".into()], "high"),
+            (vec!["valid".into()], "ultra"),
+        ] {
+            let mut invalid = input(&saved);
+            invalid.models = Some(models);
+            invalid.reasoning_effort = effort.into();
+            assert!(save(&root, &data, &invalid).is_err());
+            assert_eq!(fs::read(root.join("settings.json")).unwrap(), original);
+        }
         fs::remove_dir_all(base).unwrap();
     }
 }

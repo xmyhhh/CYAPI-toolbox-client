@@ -20,6 +20,8 @@ pub struct Input {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    #[serde(default)]
+    pub models: Option<Vec<String>>,
     pub reasoning_effort: String,
     pub revision: String,
     #[serde(default)]
@@ -191,6 +193,7 @@ fn save_revision(root: &Path, doc: &DocumentMut, auth: &Value) -> String {
         "model_provider",
         "model",
         "model_reasoning_effort",
+        "model_catalog_json",
         "cli_auth_credentials_store",
         "forced_login_method",
     ];
@@ -287,12 +290,15 @@ fn snapshot_view(root: &Path, data: &Path, snapshot: &Snapshot) -> Result<Value>
         "provider":provider,
         "baseUrl":base_url, "model":setting(&doc, "model").unwrap_or(""),
         "reasoningEffort":setting(&doc, "model_reasoning_effort").unwrap_or(""),
+        "models":crate::codex_models::selected(root, &doc)?,
         "apiKeyConfigured":key_in_auth(&auth).is_some(), "authMode":auth_mode,
         "canRestore":can_restore
     }))
 }
 
 fn validate(input: &Input) -> Result<()> {
+    crate::model_selection::models(&input.model, input.models.as_deref().unwrap_or_default())?;
+    crate::model_selection::effort(&input.reasoning_effort, crate::model_selection::EFFORTS)?;
     let url = reqwest::Url::parse(input.base_url.trim()).map_err(|_| "API 地址无效")?;
     if !["http", "https"].contains(&url.scheme())
         || url.host_str().is_none()
@@ -495,6 +501,18 @@ pub fn save(root: &Path, data: &Path, input: &Input) -> Result<Value> {
         input.api_key.trim()
     }
     .to_string();
+    if let Some(models) = &input.models {
+        let selected = crate::model_selection::models(&input.model, models)?;
+        if selected.len() > 1 || !crate::codex_models::selected(root, &doc)?.is_empty() {
+            let path =
+                crate::codex_models::write(root, data, &doc, &selected, &input.reasoning_effort)?;
+            set(
+                doc.as_table_mut(),
+                "model_catalog_json",
+                value(path.to_string_lossy().as_ref()),
+            );
+        }
+    }
     put_config(&mut doc, input)?;
     auth["auth_mode"] = json!("apikey");
     auth["OPENAI_API_KEY"] = json!(key);
@@ -565,6 +583,7 @@ mod tests {
         Input {
             base_url: "https://example.invalid/v1/".into(),
             api_key: "dummy-api-key".into(),
+            models: None,
             model: "example-model".into(),
             reasoning_effort: "high".into(),
             revision: view["revision"].as_str().unwrap().into(),
@@ -907,6 +926,72 @@ mod tests {
         fs::write(root.join("config.toml"), "").unwrap();
         fs::write(root.join("auth.json"), "{\"secret\":\"dummy-secret").unwrap();
         assert!(!view(&root, &data).unwrap_err().contains("dummy-secret"));
+        fs::remove_dir_all(base).unwrap();
+    }
+    #[test]
+    fn multiple_models_publish_immutable_catalogs_and_restore_previous_selection() {
+        let (base, root, data) = fixture();
+        fs::write(root.join("models_cache.json"), serde_json::to_vec(&json!({"models":[{
+            "slug":"known-model","display_name":"Known", "description":"Known model",
+            "base_instructions":"Keep Codex agent instructions", "shell_type":"unified_exec",
+            "default_reasoning_level":"low", "supported_reasoning_levels":[{"effort":"low","description":"low"}],
+            "default_reasoning_summary":"none", "support_verbosity":false,
+            "truncation_policy":{"mode":"tokens","limit":10000},
+            "experimental_supported_tools":[], "input_modalities":["text"]
+        }]})).unwrap()).unwrap();
+        let before = view(&root, &data).unwrap();
+        let mut change = input(&before);
+        change.model = "known-model".into();
+        change.models = Some(vec![
+            "known-model".into(),
+            "custom/model".into(),
+            "known-model".into(),
+        ]);
+        let saved = save(&root, &data, &change).unwrap();
+        assert_eq!(saved["models"], json!(["known-model", "custom/model"]));
+        assert_eq!(saved["model"], "known-model");
+        assert_eq!(saved["reasoningEffort"], "high");
+        let doc = parse_config(&Snapshot::read(&root).unwrap().config).unwrap();
+        let first_catalog = PathBuf::from(setting(&doc, "model_catalog_json").unwrap());
+        let catalog: Value = serde_json::from_slice(&fs::read(&first_catalog).unwrap()).unwrap();
+        assert_eq!(catalog["models"][0]["display_name"], "Known");
+        assert_eq!(
+            catalog["models"][1]["base_instructions"],
+            "Keep Codex agent instructions"
+        );
+        assert_eq!(catalog["models"][0]["default_reasoning_level"], "low");
+        assert_eq!(catalog["models"][1]["default_reasoning_level"], "medium");
+        let mut next = input(&saved);
+        next.model = "custom/model".into();
+        next.models = Some(vec!["custom/model".into()]);
+        next.reasoning_effort = "low".into();
+        let switched = save(&root, &data, &next).unwrap();
+        assert_eq!(switched["models"], json!(["custom/model"]));
+        assert!(first_catalog.exists());
+        let restored = restore(&root, &data, switched["revision"].as_str().unwrap()).unwrap();
+        assert_eq!(restored["models"], saved["models"]);
+        assert_eq!(restored["model"], "known-model");
+        assert_eq!(restored["reasoningEffort"], "high");
+        assert_eq!(
+            setting(
+                &parse_config(&Snapshot::read(&root).unwrap().config).unwrap(),
+                "model_catalog_json"
+            ),
+            first_catalog.to_str()
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn invalid_model_selections_do_not_modify_codex_config_or_credentials() {
+        let (base, root, data) = fixture();
+        let before = view(&root, &data).unwrap();
+        let mut change = input(&before);
+        change.models = Some(vec!["bad\nmodel".into()]);
+        assert!(save(&root, &data, &change).is_err());
+        assert!(!root.join("config.toml").exists());
+        assert!(!root.join("auth.json").exists());
+        assert!(!backup_path(&data).exists());
         fs::remove_dir_all(base).unwrap();
     }
 }

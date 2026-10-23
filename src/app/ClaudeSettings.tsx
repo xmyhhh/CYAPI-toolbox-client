@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   CheckCircle2,
   CircleHelp,
@@ -21,6 +21,7 @@ import {
 } from '../lib/api/cyapi';
 import type { CyapiRoutesView } from '../lib/api/cyapi';
 import { ModelPicker } from './ModelPicker';
+import { ReasoningEffortPicker } from './ReasoningEffortPicker';
 import { CyapiBalance } from './CyapiBalance';
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -35,6 +36,8 @@ const preview: ClaudeConfiguration = {
   revision: '',
   baseUrl: '',
   model: '',
+  models: [],
+  reasoningEffort: '',
   authTokenConfigured: false,
   apiKeyConfigured: false,
   authMode: '网页预览',
@@ -49,6 +52,8 @@ export function ClaudeSettings() {
   const [baseUrl, setBaseUrl] = useState(anthropicBase(CYAPI_DEFAULT_URL));
   const [token, setToken] = useState('');
   const [model, setModel] = useState('');
+  const [models, setModels] = useState<string[]>([]);
+  const [effort, setEffort] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState<{ text: string; error?: boolean }>();
@@ -66,6 +71,8 @@ export function ClaudeSettings() {
     setBaseUrl(url);
     setToken(savedToken ?? '');
     setModel(next.model);
+    setModels(next.models ?? []);
+    setEffort(next.reasoningEffort ?? '');
     setShowKey(false);
     setMode(
       routes.manifest.routes.some((route) => sameRoute(anthropicBase(route.baseUrl), url))
@@ -135,10 +142,19 @@ export function ClaudeSettings() {
     setNotice(undefined);
     try {
       const next = await nativeCall<ClaudeConfiguration>('claude-save', {
-        claude: { baseUrl, authToken: token, model, revision: view.revision },
+        claude: {
+          baseUrl,
+          authToken: token,
+          model,
+          models,
+          reasoningEffort: effort,
+          revision: view.revision,
+        },
       });
       apply(next);
-      setNotice({ text: '已写入 Claude Code 配置。请完全关闭当前 Claude Code 会话和后台进程，重新启动后生效。' });
+      setNotice({
+        text: '已写入 Claude Code 配置。请完全关闭当前 Claude Code 会话和后台进程，重新启动后生效。',
+      });
       setRestartPrompt(true);
     } catch (error) {
       setNotice({ text: errorText(error), error: true });
@@ -157,7 +173,9 @@ export function ClaudeSettings() {
           configurationRevision: view.revision,
         }),
       );
-      setNotice({ text: '已恢复上次保存前的 settings.json。请完全关闭当前 Claude Code 会话后重新启动。' });
+      setNotice({
+        text: '已恢复上次保存前的 settings.json。请完全关闭当前 Claude Code 会话后重新启动。',
+      });
       setRestartPrompt(true);
     } catch (error) {
       setNotice({ text: errorText(error), error: true });
@@ -311,11 +329,19 @@ export function ClaudeSettings() {
             id="claude-model"
             value={model}
             onChange={setModel}
+            selectedModels={models}
+            onModelsChange={setModels}
             baseUrl={baseUrl}
             apiKey={token}
             api="anthropic"
             disabled={busy || !view}
             placeholder="留空使用 Claude Code 默认模型"
+          />
+          <ReasoningEffortPicker
+            id="claude-effort"
+            value={effort}
+            onChange={setEffort}
+            api="anthropic"
           />
           {view?.apiKeyConfigured && (
             <p className="n-config-note">

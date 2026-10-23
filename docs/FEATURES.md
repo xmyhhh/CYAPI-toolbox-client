@@ -107,7 +107,7 @@ macOS 上以下功能与 Windows 一致可用：Skill 安装与卸载、MCP 写�
 
 工作区切换到 Codex 后，「模型接入」提供全局 API 地址、API Key、模型 ID、推理强度和恢复入口。无需启动 Skill 服务端。采用 Responses API，保存后需完全关闭 Codex（包括托盘和后台进程）再重新启动，切换至 API Key 认证；已有会话仍使用开始时读取的 URL，切换线路后需重启 Codex 并新建会话，才会使用新线路。当前不提供登录、代理转发、多供应商方案或联网验证服务商。
 
-三个模型接入页的模型字段都有「获取模型列表」。点击后由桌面端直接请求当前 API 地址的 OpenAI 兼容 `/models` 或 Anthropic `/v1/models`，使用当前填写的 API Key；返回的模型出现在下拉列表，选中后填入模型 ID，同时仍可手动输入其他 ID。请求不经过目录服务，列表不写入配置；鉴权失败、接口不存在、超时和网络错误会直接显示在模型字段下方，不自动打开日志窗口。
+三个模型接入页的模型字段都有「获取模型列表」。点击后由桌面端直接请求当前 API 地址的 OpenAI 兼容 `/models` 或 Anthropic `/v1/models`，使用当前填写的 API Key；返回的模型以复选列表显示，可勾选多个并指定一个默认模型，同时仍可手动添加其他 ID。请求不经过目录服务，获取列表不会立即写入配置，点击「保存配置」后才保存所选模型；鉴权失败、接口不存在、超时和网络错误会直接显示在模型字段下方，不自动打开日志窗口。
 
 三个工作区的「CYAPI 专属」在密钥下方显示「余额与额度」。填入密钥并停止输入 600 毫秒后自动查询，读取已有配置、保存配置或切换线路后也会刷新；可点击「刷新余额」重试。桌面端直接向所选线路的 `{baseUrl}/usage` 发送带 Bearer API Key 的 GET 请求，优先显示 `rate_limits` 中的全部周期额度及重置时间，没有周期额度时依次读取 `quota`、`balance` 或 `remaining`。Claude Code 查询使用线路清单中保留 `/v1` 的原始 API 地址。请求不经过目录服务，余额不写入本机存储；失败提示只显示在余额卡片内。
 
@@ -115,7 +115,7 @@ macOS 上以下功能与 Windows 一致可用：Skill 安装与卸载、MCP 写�
 
 保存前在工具箱数据目录的 `codex-config/previous.json` 备份原始文件；配置和备份均限制为当前用户访问。备份包含原登录凭据，勿分享。恢复会还原上次保存前两个文件的原始字节；首次创建的文件会删除。同值保存保留之前的恢复点。保存校验模型、线路与认证设置的内容版本：后台新增项目记录、修改 MCP、刷新登录令牌或调整文件排版时，保存会保留这些最新内容，不再误报「配置已变化」。模型、线路、Key、登录方式或账号发生变化时仍拒绝覆盖，需重新读取核对，当前表单输入会保留。提交时再次校验两个文件，恢复仍严格检查完整文件版本，不能覆盖后续外部修改。多文件写入使用暂存和失败回滚，不保证断电事务。
 
-本入口只编辑全局 `config.toml` 和 `auth.json`。新版 Codex 的命名 Profile 使用独立的 `<name>.config.toml` 文件；以 `--profile` 启动时，Profile 中同名字段可以覆盖全局值。
+本入口编辑全局 `config.toml` 和 `auth.json`，配置多模型时还会生成下文所述的不可变模型目录文件。新版 Codex 的命名 Profile 使用独立的 `<name>.config.toml` 文件；以 `--profile` 启动时，Profile 中同名字段可以覆盖全局值。
 
 参考 [CC Switch 的 Codex 配置实现](https://github.com/farion1231/cc-switch/blob/caf70b526abf6ebdadebeb8fa140a372ef78f6be/src-tauri/src/codex_config.rs)，许可见 [第三方许可](THIRD-PARTY-NOTICES.md)，同时内置于 EXE 的「使用帮助 → 开源许可」。格式依据 [OpenAI 配置参考](https://developers.openai.com/codex/config-reference)、[高级配置](https://developers.openai.com/codex/config-advanced) 和 [JSON Schema](https://developers.openai.com/codex/config-schema.json)。
 
@@ -125,7 +125,7 @@ macOS 上以下功能与 Windows 一致可用：Skill 安装与卸载、MCP 写�
 
 Claude Code 通过 Anthropic Messages API 请求 `{baseUrl}/v1/messages`，因此界面显示和保存的地址不含末尾 `/v1`；从 CYAPI 线路清单或手动粘贴带入的 `/v1` 会被自动去掉。线路选择与 Codex 共用服务器分发的清单，不在本机预设服务地址。
 
-保存只修改上述三个 `env` 字段，保留 `settings.json` 的其他键；文件不是 JSON 对象、`env` 不是对象或存在外部并发修改时拒绝写入。保存前在工具箱数据目录的 `claude-config/previous.json` 备份原始字节，恢复会还原上次保存前的文件（首次创建的文件会删除）。AUTH_TOKEN 只保存在本机，配置页通过本机 IPC 读取并填入密码框，默认掩码显示；不写入浏览器存储、不发给目录服务。已运行的 Claude Code 会话不会重载配置，需完全关闭当前会话和后台进程后重新启动。
+保存管理上述 API 字段、默认模型、模型选择器及思考等级，具体映射见下文「模型与思考等级」，保留 `settings.json` 的其他键；文件不是 JSON 对象、`env` 不是对象或存在外部并发修改时拒绝写入。保存前在工具箱数据目录的 `claude-config/previous.json` 备份原始字节，恢复会还原上次保存前的文件（首次创建的文件会删除）。AUTH_TOKEN 只保存在本机，配置页通过本机 IPC 读取并填入密码框，默认掩码显示；不写入浏览器存储、不发给目录服务。已运行的 Claude Code 会话不会重载配置，需完全关闭当前会话和后台进程后重新启动。
 
 状态区通过 `where claude` 检查 PATH 中是否存在命令，并读取 `~/.claude/.credentials.json` 判断当前是 API Token 还是 Claude 登录。「日志」按 Claude Code 的 JSONL、会话索引、子代理与 debug 格式提供会话时间线、用量及错误证据，见 [日志分析](DIAGNOSTICS.md)。
 
@@ -133,7 +133,7 @@ Claude Code 通过 Anthropic Messages API 请求 `{baseUrl}/v1/messages`，因�
 
 工作区切换到 OpenCode 后，「模型接入」优先编辑 `OPENCODE_CONFIG` 指定的文件（相对路径按工具箱进程的工作目录解析）。未指定时，配置目录尊重 `XDG_CONFIG_HOME`，默认 `~/.config/opencode`；`opencode.jsonc` 与 `opencode.json` 同时存在时使用前者。页面提供 CYAPI 线路、自定义 API 地址、API Key、模型 ID、CLI 检测和恢复入口。显式配置文件不会改变全局 Skill 的安装目录。
 
-写入采用 OpenCode 1.x 兼容的 `provider.cyapi` 结构：`npm = "@ai-sdk/openai-compatible"`、`api`、`options.apiKey`、`models.default.id`，并将根 `model` 设为 `cyapi/default`。OpenCode 2 仍接受这些受支持的 V1 字段；API 地址通常以 `/v1` 结尾，保存后需完全关闭 OpenCode 再重新启动。保存只修改上述字段，其他 provider、MCP、主题和权限设置保持不变；通过 JSONC CST 编辑保留注释和未修改部分的排版。
+写入采用 OpenCode 1.x 兼容的 `provider.cyapi` 结构：`npm = "@ai-sdk/openai-compatible"`、`api`、`options.apiKey`、独立的 `models.<别名>.id` 与模型思考等级，根 `model` 指向所选默认模型条目（兼容原有 `cyapi/default`）。OpenCode 2 仍接受这些受支持的 V1 字段；API 地址通常以 `/v1` 结尾，保存后需完全关闭 OpenCode 再重新启动。保存只修改上述字段，其他 provider、MCP、主题和权限设置保持不变；通过 JSONC CST 编辑保留注释和未修改部分的排版。
 
 保存前在工具箱数据目录的 `opencode-config/previous.json` 备份原始字节，恢复会还原上次保存前的文件（首次创建的文件会删除）。外部程序修改过文件、revision 过期或目标不是 JSON 对象时拒绝写入。API Key 只保存在本机，配置页通过本机 IPC 读取并填入密码框，默认掩码显示；不写入浏览器存储、不发给目录服务。状态区通过 `where opencode` 检查 PATH 中是否存在命令。「日志」兼容 OpenCode 新旧 SQLite、旧 JSON 存储及运行文本，可查看会话、工具状态、用量与错误证据，见 [日志分析](DIAGNOSTICS.md)。
 
@@ -153,6 +153,18 @@ Claude Code 通过 Anthropic Messages API 请求 `{baseUrl}/v1/messages`，因�
 - 并发校验只覆盖本次操作真正会写入的那一条目。Agent 会在后台改写自己的配置（例如 Codex 重启运行时后更新 `node_repl` 的管道路径），这类改动属于其他条目，不会再让「接入 / 接管 / 启用 / 停用 / 移除」误报「MCP 配置已变化，请重新检测」；目标条目自身被改动时仍然拒绝写入并要求重新检测。写入瞬间的并发修改仍由提交前的整文件比对拦截。
 
 CodeGraph 需要先安装 Node.js 18+ 和 `npm install -g @colbymchenry/codegraph`，并在项目目录运行 `codegraph init`。服务端目录格式和新增条目步骤见私有服务端仓库中的 MCP 目录分发文档（服务端代码未随本仓库发布）。
+
+## 模型与思考等级
+
+Codex、Claude Code 和 OpenCode 的「模型接入」均支持一个默认模型和多个可用模型。「获取模型列表」后勾选需要的模型，或手动添加模型 ID，点击「设为默认」切换默认模型，最后统一保存。当前默认模型始终包含在可用模型中；要移除它，先选择另一个默认模型。获取列表、搜索和勾选不会立即改写本机配置。接口地址或 Key 变化时会清空获取结果，保留尚未保存的选择。
+
+思考等级由当前工作区分别保存。Codex / OpenCode 提供 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`；Claude Code 提供 `low`、`medium`、`high`、`xhigh`。选「默认」移除本工具编辑的显式等级。具体支持的等级由模型和 API 服务商决定，模型列表接口通常不提供这些能力信息。
+
+- Codex 写入全局 `model`、`model_reasoning_effort`，多模型通过 `model_catalog_json` 指向 `CODEX_HOME/cyapi-models/<内容哈希>.json`。生成时复用已有目录或 `models_cache.json` 的模型元数据；没有可用缓存时，尝试本机 Codex CLI 的 `debug models --bundled`（离线、最多 5 秒）。因此首次配置多模型前，需启动过新版 Codex，或安装支持该命令的 CLI。生成失败会保留原配置与凭据。模型目录保留 Codex 自身的代理指令，已有型号保留能力字段；自定义 ID 的能力需以服务商实际支持为准。
+- Claude Code 写入 `modelPicker.options`（需要 Claude Code 2.1.242+）、同步默认 `model` 与 `ANTHROPIC_MODEL`，并同步 `CLAUDE_CODE_EFFORT_LEVEL`、`effortLevel` 和所选模型的 `modelSettings`（2.1.251+），兼容别名的等级覆盖。保留选项标签、说明、其他模型的设置与现有组织模型限制。
+- OpenCode 为每个所选模型保留独立的 `provider.cyapi.models` 条目和 `options.reasoningEffort`，默认 `model` 指向实际条目。已有别名、模型选项、variants、JSONC 注释、其他 provider 和 MCP 设置保留；取消选择的 CYAPI 模型条目会移除。
+
+三端保存前均备份，重新读取会回显模型与等级，恢复会还原上次完整配置。Codex 的目录文件按内容保存并保留历史文件，恢复旧配置引用时仍可读取原目录。保存后请完全退出对应客户端及后台进程，再启动新会话。
 
 ## 软件接入
 

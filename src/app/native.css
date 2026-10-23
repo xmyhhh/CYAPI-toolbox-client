@@ -1692,8 +1692,58 @@ code {
   margin-bottom: 8px;
   font-size: 12px;
 }
+.n-model-manual {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.n-model-manual input {
+  min-width: 0;
+  flex: 1;
+}
+.n-model-manual .n-button {
+  flex-shrink: 0;
+}
+.n-model-choices {
+  margin-top: 12px;
+}
 .n-model-field .n-model-list {
   margin-top: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.n-model-choice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+}
+.n-model-choice + .n-model-choice {
+  border-top: 1px solid var(--line);
+}
+.n-config-field .n-model-choice label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+.n-config-field .n-model-choice label span {
+  color: inherit;
+  overflow-wrap: anywhere;
+}
+.n-model-choice input,
+.n-model-choice button {
+  flex-shrink: 0;
+}
+.n-model-default {
+  color: var(--green);
+  font-size: 11px;
+  white-space: nowrap;
 }
 .n-model-field .n-config-note {
   margin-top: 6px;
