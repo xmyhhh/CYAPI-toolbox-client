@@ -1,0 +1,6 @@
+# Normalise every checkout to LF so byte-exact comparisons (e.g. the
+# generated theme palette) behave the same on every platform.
+* text=auto eol=lf
+*.png binary
+*.icns binary
+*.ico binary

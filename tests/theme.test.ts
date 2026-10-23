@@ -10,7 +10,9 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const appDirectory = path.join(root, 'src', 'app');
 
 function read(name: string): string {
-  return readFileSync(path.join(appDirectory, name), 'utf8');
+  // Git may check the file out with CRLF depending on local configuration;
+  // the generator always emits LF, so compare on normalised text.
+  return readFileSync(path.join(appDirectory, name), 'utf8').replaceAll('\r\n', '\n');
 }
 
 test('every colour in the running stylesheets has a dark variant', () => {
