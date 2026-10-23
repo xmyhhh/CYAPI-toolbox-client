@@ -1,0 +1,86 @@
+.n-cyapi-balance {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.n-cyapi-balance-heading,
+.n-cyapi-balance-heading h3,
+.n-cyapi-balance-plan-heading,
+.n-cyapi-balance-remaining {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.n-cyapi-balance-heading,
+.n-cyapi-balance-plan-heading {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.n-cyapi-balance-heading h3 {
+  margin: 0;
+  font-size: 13px;
+}
+.n-cyapi-balance-status,
+.n-cyapi-balance-reset {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.n-cyapi-balance-status,
+.n-cyapi-balance .n-config-note {
+  margin: 8px 0 0;
+}
+.n-cyapi-balance-plans {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.n-cyapi-balance-plan {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  overflow-wrap: anywhere;
+}
+.n-cyapi-balance-plan h4 {
+  margin: 0;
+  font-size: 12px;
+}
+.n-cyapi-balance-valid {
+  color: var(--green);
+}
+.n-cyapi-balance-remaining {
+  flex-wrap: wrap;
+  margin: 14px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.n-cyapi-balance-remaining strong {
+  color: var(--green);
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.n-cyapi-balance-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 0;
+  font-size: 12px;
+}
+.n-cyapi-balance-details div {
+  display: flex;
+  gap: 6px;
+}
+.n-cyapi-balance-details dt {
+  color: var(--muted);
+}
+.n-cyapi-balance-details dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.n-cyapi-balance-reset {
+  margin-top: 10px;
+}

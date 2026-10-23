@@ -1,0 +1,11 @@
+node_modules/
+dist/
+release/
+src-tauri/target/
+src-tauri/gen/
+output/
+.playwright-cli/
+*.local
+*.log
+*.tsbuildinfo
+.DS_Store

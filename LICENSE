@@ -1,0 +1,68 @@
+CYAPI Toolbox Client — Source Review License
+============================================
+CYAPI Toolbox 客户端 —— 源码查阅许可
+
+Copyright (c) 2026 CYAPI Toolbox（xmyhhh）
+
+中文版
+------
+
+本仓库公开客户端源码的唯一目的是：让用户能够审查软件的实际行为，
+验证其安全性与隐私承诺，并据此建立对软件的信任。
+
+在遵守以下条款的前提下，你可以：
+
+1. 查看、下载本仓库源码，出于审查与评估目的进行阅读和研究；
+2. 在本地编译源码，并把生成的程序用于你个人的审查与评估。
+
+但你不可以：
+
+1. 以任何方式复制、修改、合并、再发布（重分发）本仓库源码；
+2. 基于本软件或其源码创建衍生作品、二次开发或移植；
+3. 将本软件或其源码（或其变体、衍生作品）用于任何商业目的，或用其
+   提供任何面向第三方的产品或服务；
+4. 删除或更改本文件中的版权与许可声明。
+
+本许可不授予任何商标、名称或品牌的使用权。
+
+本仓库中引用的第三方组件及代码，其分别的许可条款仍然适用，
+各组件的权利在 THIRD-PARTY-NOTICES.md 中列出。
+
+收到本程序副本后，除非遵守本许可条款，否则不得使用本程序。
+除本许可明确授予的权利外，不保留其他任何权利，所有权利均归版权持有人所有。
+
+English
+-------
+
+This repository publishes the client source code for one purpose only:
+to allow users to review what the software actually does, verify its
+security and privacy claims, and build trust accordingly.
+
+Subject to the following terms, you may:
+
+1. View and download the source code in this repository, read and study
+   it for review and evaluation purposes;
+2. Build the source code locally and run the resulting program for your
+   own review and evaluation.
+
+You may NOT:
+
+1. Copy, modify, merge or redistribute this source code in any way;
+2. Create derivative works, adapt or port this software or its source
+   code;
+3. Use the software or its source code (or any variant or derivative
+   work) for any commercial purpose, or offer it as a product or
+   service to third parties;
+4. Remove or alter the copyright and license notices in this file.
+
+No trademark, product name or branding rights are granted under this
+license.
+
+Third-party components and code referenced in this repository remain
+subject to their own licenses; their rights are listed in
+THIRD-PARTY-NOTICES.md.
+
+If you receive a copy of this program, you may use it only in
+accordance with this license. No rights other than those expressly
+granted above are reserved; all other rights belong to the copyright
+holder.

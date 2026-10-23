@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "revision": "1",
+  "steps": [
+    {
+      "id": "connection",
+      "title": "服务连接",
+      "fields": [
+        {
+          "id": "baseUrl",
+          "label": "Base URL",
+          "type": "url",
+          "required": true,
+          "placeholder": "https://example.com/v1"
+        },
+        {
+          "id": "apiKey",
+          "label": "API Key",
+          "type": "secret",
+          "required": true
+        },
+        {
+          "id": "model",
+          "label": "模型",
+          "type": "text",
+          "required": true,
+          "default": "gpt-image-2.5"
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "root": "appData",
+      "path": "my-image/.env",
+      "format": "dotenv",
+      "bindings": [
+        { "key": ["OPENAI_BASE_URL"], "field": "baseUrl" },
+        { "key": ["OPENAI_API_KEY"], "field": "apiKey" },
+        { "key": ["IMAGE_MODEL"], "field": "model" }
+      ]
+    }
+  ]
+}
