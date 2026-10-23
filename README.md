@@ -29,7 +29,20 @@ npm run desktop:build  # 桌面安装包，输出到 release/
 
 ## 发版
 
-推送与 `package.json` 版本一致的 `v*` 标签（如 `v1.1.0`）触发 `.github/workflows/release.yml`：自动构建 Windows NSIS 安装包与免安装 EXE、macOS 双架构（Apple Silicon + Intel）DMG 与免安装 ZIP,并发布到 GitHub Releases。日常检查由 `ci.yml` 完成。
+推送与 `package.json` 版本一致的 `v*` 标签（如 `v1.1.0`）触发 `.github/workflows/release.yml`：自动构建 Windows NSIS 安装包与免安装 EXE、macOS 双架构（Apple Silicon + Intel）DMG 与免安装 ZIP,发布到 GitHub Releases（含 SHA256SUMS.txt）,并以私钥部署官网下载区。测试构建用 `ci-*` 标签或 workflow_dispatch `dry-run`,只产 artifacts 不发版。
+
+## 官网自动部署的 Secrets
+
+发版流程的最后一步会检出私有官网源码、按 Release 产物重新生成下载清单与校验值并部署官网。需要在 Settings → Secrets and variables → Actions 配置：
+
+| Secret | 内容 |
+| --- | --- |
+| `MONOREPO_TOKEN` | 可读取私有仓库 `xmyhhh/CYAPI-toolbox` 的 access token（官网源码所在） |
+| `SITE_SSH_HOST` | 官网服务器地址 |
+| `SITE_SSH_USER` | 部署 SSH 用户 |
+| `SITE_DEPLOY_KEY` | 部署专用私钥（公钥加入服务器 `authorized_keys`） |
+
+未配置时前四步照常：构建、测试、Release 与产物都在,仅跳过官网部署。
 
 ## 目录结构
 

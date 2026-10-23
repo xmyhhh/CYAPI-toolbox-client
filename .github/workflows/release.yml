@@ -142,3 +142,109 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             assets/*
+
+  # After a real release the installers land on the website as well. The job
+  # checks the private website sources out, builds the site against the
+  # release artifacts and deploys it with the existing deploy script. Every
+  # address and key stays in Actions settings; nothing is written here.
+  website:
+    name: Publish the website
+    needs: release
+    # The env context is not available in a job-level if, so the ci-* gate
+    # reads the tag name directly: only v* tags deploy the website.
+    if: needs.release.result == 'success' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check the deployment secrets
+        env:
+          MONOREPO_TOKEN: ${{ secrets.MONOREPO_TOKEN }}
+          SITE_SSH_HOST: ${{ secrets.SITE_SSH_HOST }}
+          SITE_SSH_USER: ${{ secrets.SITE_SSH_USER }}
+          SITE_DEPLOY_KEY: ${{ secrets.SITE_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          for name in MONOREPO_TOKEN SITE_SSH_HOST SITE_SSH_USER SITE_DEPLOY_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret $name is missing; configure it under Settings → Secrets and variables → Actions (see README.md)."
+              exit 1
+            fi
+          done
+
+      - name: Check out the private website sources
+        uses: actions/checkout@v4
+        with:
+          repository: xmyhhh/CYAPI-toolbox
+          token: ${{ secrets.MONOREPO_TOKEN }}
+
+      - name: Check out the client repository
+        uses: actions/checkout@v4
+        with:
+          repository: xmyhhh/CYAPI-toolbox-client
+          path: CYAPI-toolbox-client
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Download the released artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Stage the installers for the website build
+        run: |
+          set -euo pipefail
+          mkdir -p CYAPI-toolbox-client/release
+          cp assets/CYAPI-Toolbox_* CYAPI-toolbox-client/release/
+          ls -l CYAPI-toolbox-client/release
+
+      # The catalog server archive ships from the private repository. When
+      # the release carries it, the website offers it for the new version;
+      # otherwise that download stays on the manual server flow.
+      - name: Stage the catalog server archive from the release
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./CYAPI-toolbox-client/package.json').version")"
+          url="https://github.com/xmyhhh/CYAPI-toolbox-client/releases/download/$RELEASE_TAG/CYAPI-Skill-Server_${version}.zip"
+          if curl -fsSL "$url" -o "server/release/CYAPI-Skill-Server_${version}.zip"; then
+            echo "The release carries the server archive; staged for the website."
+          else
+            echo "::notice::The release carries no CYAPI-Skill-Server_${version}.zip; publish it later per DEPLOYMENT.md."
+          fi
+
+      - run: npm ci
+        working-directory: website
+
+      - name: Build the website
+        run: npm run build
+        working-directory: website
+
+      - name: Trust the server host key
+        env:
+          SITE_SSH_HOST: ${{ secrets.SITE_SSH_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SITE_SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy the website
+        env:
+          SITE_SSH_HOST: ${{ secrets.SITE_SSH_HOST }}
+          SITE_SSH_USER: ${{ secrets.SITE_SSH_USER }}
+          SITE_DEPLOY_KEY: ${{ secrets.SITE_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$SITE_DEPLOY_KEY" > deploy_key
+          chmod 600 deploy_key
+          CYAPI_SERVER_ADDRESS="$SITE_SSH_HOST" \
+          CYAPI_SSH_USER="$SITE_SSH_USER" \
+          CYAPI_IDENTITY_FILE=deploy_key \
+            bash website/deploy/deploy.sh
+
+      - name: Remind about the server-side update manifest
+        run: |
+          echo '::notice::The website deploy does not touch the catalog server. Sync server/data/client-release*.json with the server flow if this release also ships a catalog server update.'
