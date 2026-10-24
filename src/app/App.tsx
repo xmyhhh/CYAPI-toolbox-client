@@ -251,6 +251,7 @@ export default function App() {
     main.current?.scrollTo({ top: 0 });
   }, [page, workspace]);
   useEffect(() => {
+    document.documentElement.dataset.workspace = workspace;
     localStorage.setItem('cyapi.workspace', workspace);
     setTarget(workspace);
   }, [workspace]);

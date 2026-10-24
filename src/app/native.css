@@ -6,8 +6,8 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  --green: #29644d;
-  --green-solid: #2a674d;
+  --green: var(--workspace-accent);
+  --green-solid: var(--workspace-solid);
   --muted: #717c74;
   --line: #e3e8e1;
   --surface-muted: #f7f8f6;
@@ -42,7 +42,7 @@ input:focus-visible,
 select:focus-visible,
 a:focus-visible,
 summary:focus-visible {
-  outline: 2px solid #72a589;
+  outline: 2px solid var(--workspace-focus);
   outline-offset: 3px;
 }
 h1,
@@ -80,8 +80,8 @@ code {
   width: 188px;
   flex-shrink: 0;
   padding: 22px 12px 12px;
-  background: #1c3c32;
-  color: #c4d3c9;
+  background: var(--workspace-sidebar);
+  color: var(--workspace-sidebar-ink);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -93,13 +93,13 @@ code {
   align-items: center;
   text-align: left;
   padding: 0 12px;
-  color: #f2f7f1;
+  color: var(--workspace-sidebar-strong);
 }
 .brand-mark {
   width: 32px;
   height: 35px;
-  background: #d1e8a9;
-  color: #254d37;
+  background: var(--workspace-mark);
+  color: var(--workspace-mark-ink);
   display: grid;
   place-items: center;
   border-radius: 8px;
@@ -115,7 +115,7 @@ code {
 .brand small {
   font-size: 8px;
   letter-spacing: 3px;
-  color: #9eb7a7;
+  color: var(--workspace-sidebar-muted);
   margin-top: 2px;
 }
 .primary-nav {
@@ -128,7 +128,7 @@ code {
   overflow-y: auto;
   align-content: start;
   scrollbar-width: thin;
-  scrollbar-color: #3d6455 transparent;
+  scrollbar-color: var(--workspace-sidebar-control-line) transparent;
 }
 .primary-nav > button,
 .n-sidebar-tools > button {
@@ -137,25 +137,25 @@ code {
   align-items: center;
   padding: 11px 12px;
   text-align: left;
-  color: #b9cfc0;
+  color: var(--workspace-sidebar-ink);
   border-radius: 6px;
   width: 100%;
 }
 .primary-nav > button:hover,
 .n-sidebar-tools > button:hover {
-  background: #274a3c;
-  color: #fff;
+  background: var(--workspace-sidebar-hover);
+  color: var(--workspace-sidebar-strong);
 }
 .primary-nav > button.active,
 .n-sidebar-tools > button.active {
-  background: #315445;
-  color: #f2f7ec;
+  background: var(--workspace-sidebar-active);
+  color: var(--workspace-sidebar-strong);
   font-weight: 600;
 }
 .nav-count {
   margin-left: auto;
   font-size: 11px;
-  color: #a4bdad;
+  color: var(--workspace-sidebar-muted);
   font-weight: 400;
 }
 /* The secondary tools stay a thin strip, whatever the window size is. */
@@ -163,7 +163,7 @@ code {
   flex-shrink: 0;
   margin-top: 10px;
   padding-top: 10px;
-  border-top: 1px solid #2b5143;
+  border-top: 1px solid var(--workspace-sidebar-line);
 }
 .n-sidebar-tools {
   display: flex;
@@ -177,7 +177,7 @@ code {
   width: 30px;
   height: 30px;
   padding: 0;
-  color: #a8c2b1;
+  color: var(--workspace-sidebar-muted);
 }
 .n-sidebar-meta {
   display: flex;
@@ -185,7 +185,7 @@ code {
   justify-content: center;
   gap: 5px;
   margin: 8px 2px 0;
-  color: #7e9a8a;
+  color: var(--workspace-sidebar-faint);
   font-size: 9px;
   line-height: 1.5;
   overflow: hidden;
@@ -271,8 +271,8 @@ code {
   white-space: nowrap;
 }
 .n-button:hover:not(:disabled) {
-  background: #f3f6ef;
-  border-color: #9cb79e;
+  background: var(--workspace-tint);
+  border-color: var(--workspace-tint-border);
 }
 .n-button.n-primary {
   color: white;
@@ -280,7 +280,7 @@ code {
   border-color: var(--green-solid);
 }
 .n-button.n-primary:hover:not(:disabled) {
-  background: #20533f;
+  background: var(--workspace-hover);
 }
 .n-button.n-danger {
   background: #a14d3f;
@@ -298,7 +298,7 @@ code {
 }
 .n-icon-button:hover,
 .icon-button:hover {
-  background: #edf2e8;
+  background: var(--workspace-tint);
   color: var(--green);
 }
 .n-catalog-toolbar {
@@ -354,7 +354,7 @@ code {
 }
 .n-catalog-recommended input {
   margin: 0;
-  accent-color: #7f9c6a;
+  accent-color: var(--green);
 }
 .n-setup-notes {
   padding: 10px 12px;
@@ -378,7 +378,7 @@ code {
   color: #7a8976;
 }
 .n-search:focus-within {
-  border-color: #7fa587;
+  border-color: var(--workspace-focus);
 }
 .n-search input {
   padding: 8px 0;
@@ -389,7 +389,7 @@ code {
   font-size: 12px;
 }
 .n-search:has(input:focus-visible) {
-  outline: 2px solid #72a589;
+  outline: 2px solid var(--workspace-focus);
   outline-offset: 2px;
 }
 .n-skill-list,
@@ -412,8 +412,8 @@ code {
   height: 46px;
   display: grid;
   place-items: center;
-  color: #58805b;
-  background: #eff4e9;
+  color: var(--workspace-tint-ink);
+  background: var(--workspace-tint);
   border-radius: 10px;
   flex-shrink: 0;
 }
@@ -735,7 +735,7 @@ code {
 .n-integration-icon {
   display: grid;
   place-items: center;
-  background: #edf2e9;
+  background: var(--workspace-tint);
   color: var(--green);
   width: 48px;
   height: 48px;
@@ -926,7 +926,7 @@ code {
 }
 .n-cyapi-route.selected {
   border-color: var(--green);
-  background: #f0f6f1;
+  background: var(--workspace-tint);
 }
 .n-cyapi-route input {
   margin: 0;
@@ -1834,7 +1834,7 @@ code {
   font-weight: 600;
 }
 .n-inline-action:hover {
-  background: #edf2e8;
+  background: var(--workspace-tint);
 }
 .n-inline-action:disabled {
   background: none;
@@ -1894,7 +1894,7 @@ code {
   margin-bottom: 7px;
   font-size: 10px;
   letter-spacing: 0.12em;
-  color: #8ba899;
+  color: var(--workspace-sidebar-faint);
 }
 .n-workspace-toggle {
   display: flex;
@@ -1902,16 +1902,16 @@ code {
   gap: 8px;
   width: 100%;
   padding: 9px 10px;
-  border: 1px solid #31594a;
+  border: 1px solid var(--workspace-sidebar-control-line);
   border-radius: 7px;
-  background: #24483c;
-  color: #eef6ef;
+  background: var(--workspace-sidebar-control);
+  color: var(--workspace-sidebar-strong);
   font-size: 12.5px;
   font-weight: 600;
   text-align: left;
 }
 .n-workspace-toggle:hover {
-  background: #2a5345;
+  background: var(--workspace-sidebar-control-hover);
 }
 .n-workspace-toggle > span:nth-child(2) {
   flex: 1;
@@ -1922,7 +1922,7 @@ code {
 }
 .n-workspace-toggle svg {
   flex-shrink: 0;
-  color: #9db8a7;
+  color: var(--workspace-sidebar-muted);
   transition: transform 0.15s ease;
 }
 .n-workspace-toggle svg.open {
@@ -1932,14 +1932,14 @@ code {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #d1e8a9;
+  background: var(--agent-codex);
   flex-shrink: 0;
 }
 .n-workspace-dot.claude {
-  background: #e6b98e;
+  background: var(--agent-claude);
 }
 .n-workspace-dot.opencode {
-  background: #9ec8e8;
+  background: var(--agent-opencode);
 }
 .n-workspace-menu {
   position: absolute;
@@ -1948,9 +1948,9 @@ code {
   left: 0;
   right: 0;
   padding: 4px;
-  border: 1px solid #3a6051;
+  border: 1px solid var(--workspace-sidebar-menu-line);
   border-radius: 8px;
-  background: #24483c;
+  background: var(--workspace-sidebar-control);
   box-shadow: 0 12px 28px #0b1f1766;
 }
 .n-workspace-menu > button {
@@ -1960,13 +1960,13 @@ code {
   width: 100%;
   padding: 8px 9px;
   border-radius: 6px;
-  color: #d8e6dc;
+  color: var(--workspace-sidebar-ink);
   text-align: left;
 }
 .n-workspace-menu > button:hover,
 .n-workspace-menu > button.active {
-  background: #2f5749;
-  color: #fff;
+  background: var(--workspace-sidebar-control-hover);
+  color: var(--workspace-sidebar-strong);
 }
 .n-workspace-menu > button > span:nth-child(2) {
   flex: 1;
@@ -1981,10 +1981,10 @@ code {
   display: block;
   margin-top: 1px;
   font-size: 10.5px;
-  color: #9db8a7;
+  color: var(--workspace-sidebar-muted);
 }
 .n-workspace-menu > button > svg {
-  color: #d1e8a9;
+  color: var(--workspace-mark);
   flex-shrink: 0;
 }
 .n-workspace + .primary-nav {
@@ -2197,7 +2197,7 @@ code {
 .n-mcp-local-workspaces input {
   height: auto;
   margin: 0;
-  accent-color: #7f9c6a;
+  accent-color: var(--green);
 }
 .n-mcp-local-list {
   display: grid;
@@ -2222,7 +2222,7 @@ code {
   width: 32px;
   height: 32px;
   border-radius: 7px;
-  background: #edf2e9;
+  background: var(--workspace-tint);
   color: var(--green);
 }
 .n-mcp-local-row > div {

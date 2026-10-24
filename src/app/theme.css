@@ -3,35 +3,21 @@
   color-scheme: light dark;
   --t-15281f: #15281f;
   --t-182b24: #182b24;
-  --t-1c3c32: #1c3c32;
   --t-1d3429: #1d3429;
   --t-203a2e: #203a2e;
-  --t-20533f: #20533f;
   --t-214c30: #214c30;
-  --t-24483c: #24483c;
-  --t-254d37: #254d37;
-  --t-274a3c: #274a3c;
   --t-293c32: #293c32;
-  --t-29644d: #29644d;
-  --t-2a5345: #2a5345;
-  --t-2a674d: #2a674d;
   --t-2b4b3c: #2b4b3c;
-  --t-2b5143: #2b5143;
   --t-2c6b50: #2c6b50;
   --t-2e5841: #2e5841;
-  --t-2f5749: #2f5749;
-  --t-315445: #315445;
-  --t-31594a: #31594a;
   --t-334437: #334437;
   --t-334a3d: #334a3d;
   --t-35513f: #35513f;
   --t-385247: #385247;
   --t-385333: #385333;
   --t-38543e: #38543e;
-  --t-3a6051: #3a6051;
   --t-3b5038: #3b5038;
   --t-3c3724: #3c3724;
-  --t-3d6455: #3d6455;
   --t-42573d: #42573d;
   --t-426136: #426136;
   --t-456253: #456253;
@@ -42,7 +28,6 @@
   --t-536259: #536259;
   --t-55645b: #55645b;
   --t-55705f: #55705f;
-  --t-58805b: #58805b;
   --t-5a685d: #5a685d;
   --t-5a8758: #5a8758;
   --t-5b7b46: #5b7b46;
@@ -73,7 +58,6 @@
   --t-717c74: #717c74;
   --t-72806d: #72806d;
   --t-72816f: #72816f;
-  --t-72a589: #72a589;
   --t-75816c: #75816c;
   --t-778173: #778173;
   --t-778174: #778174;
@@ -87,9 +71,6 @@
   --t-7c8a6f: #7c8a6f;
   --t-7d8e6a: #7d8e6a;
   --t-7d9a83: #7d9a83;
-  --t-7e9a8a: #7e9a8a;
-  --t-7f9c6a: #7f9c6a;
-  --t-7fa587: #7fa587;
   --t-80632c: #80632c;
   --t-82916f: #82916f;
   --t-829575: #829575;
@@ -104,7 +85,6 @@
   --t-8a948d: #8a948d;
   --t-8b9485: #8b9485;
   --t-8b9fa2: #8b9fa2;
-  --t-8ba899: #8ba899;
   --t-8c967f: #8c967f;
   --t-8c9781: #8c9781;
   --t-8c9d81: #8c9d81;
@@ -128,22 +108,16 @@
   --t-9aa28f: #9aa28f;
   --t-9ba48e: #9ba48e;
   --t-9ca38e: #9ca38e;
-  --t-9cb79e: #9cb79e;
   --t-9d6d2a: #9d6d2a;
   --t-9db69e: #9db69e;
-  --t-9db8a7: #9db8a7;
-  --t-9eb7a7: #9eb7a7;
-  --t-9ec8e8: #9ec8e8;
   --t-a14d3f: #a14d3f;
   --t-a1523f: #a1523f;
   --t-a1523f-s: #a1523f;
   --t-a1523f-f: #a1523f;
   --t-a24d3f: #a24d3f;
   --t-a47f3b: #a47f3b;
-  --t-a4bdad: #a4bdad;
   --t-a83a35: #a83a35;
   --t-a84e37: #a84e37;
-  --t-a8c2b1: #a8c2b1;
   --t-ab5a3c: #ab5a3c;
   --t-af4c37: #af4c37;
   --t-af5c40: #af5c40;
@@ -154,22 +128,16 @@
   --t-b3c4ba: #b3c4ba;
   --t-b54f3a: #b54f3a;
   --t-b7c8a9: #b7c8a9;
-  --t-b9cfc0: #b9cfc0;
   --t-bdce91: #bdce91;
-  --t-c4d3c9: #c4d3c9;
   --t-cba970: #cba970;
   --t-cbdfa2: #cbdfa2;
   --t-cfd9ce: #cfd9ce;
   --t-cfe0c4: #cfe0c4;
-  --t-d1e8a9: #d1e8a9;
-  --t-d1e8a9-s: #d1e8a9;
-  --t-d1e8a9-f: #d1e8a9;
   --t-d48a69: #d48a69;
   --t-d5e1bd: #d5e1bd;
   --t-d7e4cc: #d7e4cc;
   --t-d8b26c: #d8b26c;
   --t-d8e3d3: #d8e3d3;
-  --t-d8e6dc: #d8e6dc;
   --t-d9e2d0: #d9e2d0;
   --t-dbe2d8: #dbe2d8;
   --t-dbe3d5: #dbe3d5;
@@ -192,7 +160,6 @@
   --t-e3e8e1: #e3e8e1;
   --t-e4eadc: #e4eadc;
   --t-e5eade: #e5eade;
-  --t-e6b98e: #e6b98e;
   --t-e8ecdf: #e8ecdf;
   --t-e8ede3: #e8ede3;
   --t-e8f0db: #e8f0db;
@@ -206,16 +173,12 @@
   --t-edf0e7: #edf0e7;
   --t-edf0e8: #edf0e8;
   --t-edf0e9: #edf0e9;
-  --t-edf2e8: #edf2e8;
-  --t-edf2e9: #edf2e9;
   --t-edf5ed: #edf5ed;
   --t-eef1ea: #eef1ea;
   --t-eef2e9: #eef2e9;
   --t-eef4e8: #eef4e8;
-  --t-eef6ef: #eef6ef;
   --t-efdfb8: #efdfb8;
   --t-efe1ba: #efe1ba;
-  --t-eff4e9: #eff4e9;
   --t-f0f2ec: #f0f2ec;
   --t-f0f3eb: #f0f3eb;
   --t-f0f3ee: #f0f3ee;
@@ -223,16 +186,11 @@
   --t-f0f5e6: #f0f5e6;
   --t-f0f5e9: #f0f5e9;
   --t-f0f5eb: #f0f5eb;
-  --t-f0f6f1: #f0f6f1;
   --t-f1f4ed: #f1f4ed;
   --t-f1f7ef: #f1f7ef;
   --t-f2d89c: #f2d89c;
   --t-f2f7ec: #f2f7ec;
-  --t-f2f7ec-s: #f2f7ec;
-  --t-f2f7ec-f: #f2f7ec;
-  --t-f2f7f1: #f2f7f1;
   --t-f2f8f0: #f2f8f0;
-  --t-f3f6ef: #f3f6ef;
   --t-f4d086: #f4d086;
   --t-f4f6f0: #f4f6f0;
   --t-f4f7ed: #f4f7ed;
@@ -268,7 +226,6 @@
   :root:not([data-theme="light"]) {
   --t-214c30: #bddec9;
   --t-293c32: #e8eaec;
-  --t-29644d: #5fc79b;
   --t-2c6b50: #5fae86;
   --t-2e5841: #bed9ca;
   --t-334437: #e8eaec;
@@ -286,7 +243,6 @@
   --t-536259: #b0b7bd;
   --t-55645b: #b0b7bd;
   --t-55705f: #b0b7bd;
-  --t-58805b: #bacdbb;
   --t-5a685d: #b0b7bd;
   --t-5b7b46: #c3d3b8;
   --t-5d7057: #b0b7bd;
@@ -328,9 +284,6 @@
   --t-7c8a6f: #b0b7bd;
   --t-7d8e6a: #b0baa4;
   --t-7d9a83: #a2b6a6;
-  --t-7e9a8a: #929aa0;
-  --t-7f9c6a: #abbd9f;
-  --t-7fa587: #446a4c;
   --t-80632c: #dfcfb1;
   --t-82916f: #afb8a4;
   --t-829575: #abb7a3;
@@ -345,7 +298,6 @@
   --t-8a948d: #929aa0;
   --t-8b9485: #929aa0;
   --t-8b9fa2: #a3b5b8;
-  --t-8ba899: #9eb4a9;
   --t-8c967f: #929aa0;
   --t-8c9781: #929aa0;
   --t-8c9d81: #929aa0;
@@ -369,10 +321,8 @@
   --t-9aa28f: #929aa0;
   --t-9ba48e: #929aa0;
   --t-9ca38e: #929aa0;
-  --t-9cb79e: #333a40;
   --t-9d6d2a: #e1caa8;
   --t-9db69e: #333a40;
-  --t-9ec8e8: #264359;
   --t-a1523f: #d9b5ac;
   --t-a1523f-s: #a1523f;
   --t-a1523f-f: #d9b5ac;
@@ -392,8 +342,6 @@
   --t-cbdfa2: #4a5b27;
   --t-cfd9ce: #333a40;
   --t-cfe0c4: #333a40;
-  --t-d1e8a9-s: #d1e8a9;
-  --t-d1e8a9-f: #d1e8a9;
   --t-d48a69: #74422c;
   --t-d5e1bd: #415022;
   --t-d7e4cc: #333a40;
@@ -419,7 +367,6 @@
   --t-e3e8e1: #333a40;
   --t-e4eadc: #333a40;
   --t-e5eade: #333a40;
-  --t-e6b98e: #604429;
   --t-e8ecdf: #333a40;
   --t-e8ede3: #333a40;
   --t-e8f0db: #333a40;
@@ -433,15 +380,12 @@
   --t-edf0e7: #333a40;
   --t-edf0e8: #262c30;
   --t-edf0e9: #262c30;
-  --t-edf2e8: #262c30;
-  --t-edf2e9: #262c30;
   --t-edf5ed: #262c30;
   --t-eef1ea: #262c30;
   --t-eef2e9: #262c30;
   --t-eef4e8: #262c30;
   --t-efdfb8: #4b4025;
   --t-efe1ba: #4a4025;
-  --t-eff4e9: #262c30;
   --t-f0f2ec: #262c30;
   --t-f0f3eb: #262c30;
   --t-f0f3ee: #262c30;
@@ -449,14 +393,10 @@
   --t-f0f5e6: #262c30;
   --t-f0f5e9: #262c30;
   --t-f0f5eb: #262c30;
-  --t-f0f6f1: #262c30;
   --t-f1f4ed: #262c30;
   --t-f1f7ef: #262c30;
   --t-f2f7ec: #262c30;
-  --t-f2f7ec-s: #262c30;
-  --t-f2f7ec-f: #f2f7ec;
   --t-f2f8f0: #262c30;
-  --t-f3f6ef: #262c30;
   --t-f4f6f0: #262c30;
   --t-f4f7ed: #262c30;
   --t-f4f7ef: #262c30;
@@ -490,7 +430,6 @@
 :root[data-theme="dark"] {
   --t-214c30: #bddec9;
   --t-293c32: #e8eaec;
-  --t-29644d: #5fc79b;
   --t-2c6b50: #5fae86;
   --t-2e5841: #bed9ca;
   --t-334437: #e8eaec;
@@ -508,7 +447,6 @@
   --t-536259: #b0b7bd;
   --t-55645b: #b0b7bd;
   --t-55705f: #b0b7bd;
-  --t-58805b: #bacdbb;
   --t-5a685d: #b0b7bd;
   --t-5b7b46: #c3d3b8;
   --t-5d7057: #b0b7bd;
@@ -550,9 +488,6 @@
   --t-7c8a6f: #b0b7bd;
   --t-7d8e6a: #b0baa4;
   --t-7d9a83: #a2b6a6;
-  --t-7e9a8a: #929aa0;
-  --t-7f9c6a: #abbd9f;
-  --t-7fa587: #446a4c;
   --t-80632c: #dfcfb1;
   --t-82916f: #afb8a4;
   --t-829575: #abb7a3;
@@ -567,7 +502,6 @@
   --t-8a948d: #929aa0;
   --t-8b9485: #929aa0;
   --t-8b9fa2: #a3b5b8;
-  --t-8ba899: #9eb4a9;
   --t-8c967f: #929aa0;
   --t-8c9781: #929aa0;
   --t-8c9d81: #929aa0;
@@ -591,10 +525,8 @@
   --t-9aa28f: #929aa0;
   --t-9ba48e: #929aa0;
   --t-9ca38e: #929aa0;
-  --t-9cb79e: #333a40;
   --t-9d6d2a: #e1caa8;
   --t-9db69e: #333a40;
-  --t-9ec8e8: #264359;
   --t-a1523f: #d9b5ac;
   --t-a1523f-s: #a1523f;
   --t-a1523f-f: #d9b5ac;
@@ -614,8 +546,6 @@
   --t-cbdfa2: #4a5b27;
   --t-cfd9ce: #333a40;
   --t-cfe0c4: #333a40;
-  --t-d1e8a9-s: #d1e8a9;
-  --t-d1e8a9-f: #d1e8a9;
   --t-d48a69: #74422c;
   --t-d5e1bd: #415022;
   --t-d7e4cc: #333a40;
@@ -641,7 +571,6 @@
   --t-e3e8e1: #333a40;
   --t-e4eadc: #333a40;
   --t-e5eade: #333a40;
-  --t-e6b98e: #604429;
   --t-e8ecdf: #333a40;
   --t-e8ede3: #333a40;
   --t-e8f0db: #333a40;
@@ -655,15 +584,12 @@
   --t-edf0e7: #333a40;
   --t-edf0e8: #262c30;
   --t-edf0e9: #262c30;
-  --t-edf2e8: #262c30;
-  --t-edf2e9: #262c30;
   --t-edf5ed: #262c30;
   --t-eef1ea: #262c30;
   --t-eef2e9: #262c30;
   --t-eef4e8: #262c30;
   --t-efdfb8: #4b4025;
   --t-efe1ba: #4a4025;
-  --t-eff4e9: #262c30;
   --t-f0f2ec: #262c30;
   --t-f0f3eb: #262c30;
   --t-f0f3ee: #262c30;
@@ -671,14 +597,10 @@
   --t-f0f5e6: #262c30;
   --t-f0f5e9: #262c30;
   --t-f0f5eb: #262c30;
-  --t-f0f6f1: #262c30;
   --t-f1f4ed: #262c30;
   --t-f1f7ef: #262c30;
   --t-f2f7ec: #262c30;
-  --t-f2f7ec-s: #262c30;
-  --t-f2f7ec-f: #f2f7ec;
   --t-f2f8f0: #262c30;
-  --t-f3f6ef: #262c30;
   --t-f4f6f0: #262c30;
   --t-f4f7ed: #262c30;
   --t-f4f7ef: #262c30;
@@ -706,4 +628,236 @@
   --t-ffffff: #1e2226;
   --t-ffffff-s: #1e2226;
   --t-ffffff-f: #ffffff;
+}
+
+/* Subtle software-specific accents; shared surfaces stay neutral. */
+:root {
+  --agent-codex: #d1e8a9;
+  --agent-claude: #e6b98e;
+  --agent-opencode: #d4d7dc;
+}
+
+:root,
+:root[data-workspace="codex"] {
+  --workspace-accent: #29644d;
+  --workspace-solid: #2a674d;
+  --workspace-hover: #20533f;
+  --workspace-tint: #eff4e9;
+  --workspace-tint-ink: #527656;
+  --workspace-tint-border: #9cb79e;
+  --workspace-focus: #72a589;
+  --workspace-sidebar: #1c3c32;
+  --workspace-sidebar-ink: #c4d3c9;
+  --workspace-sidebar-muted: #9db8a7;
+  --workspace-sidebar-faint: #8ba899;
+  --workspace-sidebar-strong: #f2f7f1;
+  --workspace-sidebar-hover: #274a3c;
+  --workspace-sidebar-active: #315445;
+  --workspace-sidebar-line: #2b5143;
+  --workspace-sidebar-control: #24483c;
+  --workspace-sidebar-control-hover: #2a5345;
+  --workspace-sidebar-control-line: #31594a;
+  --workspace-sidebar-menu-line: #3a6051;
+  --workspace-mark: #d1e8a9;
+  --workspace-mark-ink: #254d37;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-workspace]),
+  :root[data-workspace="codex"]:not([data-theme="light"]) {
+    --workspace-accent: #5fc79b;
+    --workspace-solid: #2a674d;
+    --workspace-hover: #337c5e;
+    --workspace-tint: #26352d;
+    --workspace-tint-ink: #a1c6a5;
+    --workspace-tint-border: #527b62;
+    --workspace-focus: #7cb99a;
+    --workspace-sidebar: #1c3c32;
+    --workspace-sidebar-ink: #c4d3c9;
+    --workspace-sidebar-muted: #9db8a7;
+    --workspace-sidebar-faint: #8ba899;
+    --workspace-sidebar-strong: #f2f7f1;
+    --workspace-sidebar-hover: #274a3c;
+    --workspace-sidebar-active: #315445;
+    --workspace-sidebar-line: #2b5143;
+    --workspace-sidebar-control: #24483c;
+    --workspace-sidebar-control-hover: #2a5345;
+    --workspace-sidebar-control-line: #31594a;
+    --workspace-sidebar-menu-line: #3a6051;
+    --workspace-mark: #d1e8a9;
+    --workspace-mark-ink: #254d37;
+  }
+}
+
+:root[data-theme="dark"]:not([data-workspace]),
+:root[data-workspace="codex"][data-theme="dark"] {
+  --workspace-accent: #5fc79b;
+  --workspace-solid: #2a674d;
+  --workspace-hover: #337c5e;
+  --workspace-tint: #26352d;
+  --workspace-tint-ink: #a1c6a5;
+  --workspace-tint-border: #527b62;
+  --workspace-focus: #7cb99a;
+  --workspace-sidebar: #1c3c32;
+  --workspace-sidebar-ink: #c4d3c9;
+  --workspace-sidebar-muted: #9db8a7;
+  --workspace-sidebar-faint: #8ba899;
+  --workspace-sidebar-strong: #f2f7f1;
+  --workspace-sidebar-hover: #274a3c;
+  --workspace-sidebar-active: #315445;
+  --workspace-sidebar-line: #2b5143;
+  --workspace-sidebar-control: #24483c;
+  --workspace-sidebar-control-hover: #2a5345;
+  --workspace-sidebar-control-line: #31594a;
+  --workspace-sidebar-menu-line: #3a6051;
+  --workspace-mark: #d1e8a9;
+  --workspace-mark-ink: #254d37;
+}
+
+:root[data-workspace="claude"] {
+  --workspace-accent: #95513b;
+  --workspace-solid: #9b563f;
+  --workspace-hover: #80442f;
+  --workspace-tint: #f6eee8;
+  --workspace-tint-ink: #925e48;
+  --workspace-tint-border: #c6a18c;
+  --workspace-focus: #b78065;
+  --workspace-sidebar: #3e302b;
+  --workspace-sidebar-ink: #d9cec7;
+  --workspace-sidebar-muted: #c3ada0;
+  --workspace-sidebar-faint: #b49c8f;
+  --workspace-sidebar-strong: #faf3ee;
+  --workspace-sidebar-hover: #4c3b33;
+  --workspace-sidebar-active: #60483c;
+  --workspace-sidebar-line: #574238;
+  --workspace-sidebar-control: #49382f;
+  --workspace-sidebar-control-hover: #584236;
+  --workspace-sidebar-control-line: #685043;
+  --workspace-sidebar-menu-line: #745a4b;
+  --workspace-mark: #e6b98e;
+  --workspace-mark-ink: #513728;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-workspace="claude"]:not([data-theme="light"]) {
+    --workspace-accent: #dfa98b;
+    --workspace-solid: #995840;
+    --workspace-hover: #a86249;
+    --workspace-tint: #382c27;
+    --workspace-tint-ink: #dfb499;
+    --workspace-tint-border: #87634f;
+    --workspace-focus: #ce9a7b;
+    --workspace-sidebar: #302723;
+    --workspace-sidebar-ink: #d9cec7;
+    --workspace-sidebar-muted: #c3ada0;
+    --workspace-sidebar-faint: #b49c8f;
+    --workspace-sidebar-strong: #faf3ee;
+    --workspace-sidebar-hover: #41332c;
+    --workspace-sidebar-active: #554035;
+    --workspace-sidebar-line: #574238;
+    --workspace-sidebar-control: #3c2f29;
+    --workspace-sidebar-control-hover: #4b392f;
+    --workspace-sidebar-control-line: #685043;
+    --workspace-sidebar-menu-line: #745a4b;
+    --workspace-mark: #e6b98e;
+    --workspace-mark-ink: #513728;
+  }
+}
+
+:root[data-workspace="claude"][data-theme="dark"] {
+  --workspace-accent: #dfa98b;
+  --workspace-solid: #995840;
+  --workspace-hover: #a86249;
+  --workspace-tint: #382c27;
+  --workspace-tint-ink: #dfb499;
+  --workspace-tint-border: #87634f;
+  --workspace-focus: #ce9a7b;
+  --workspace-sidebar: #302723;
+  --workspace-sidebar-ink: #d9cec7;
+  --workspace-sidebar-muted: #c3ada0;
+  --workspace-sidebar-faint: #b49c8f;
+  --workspace-sidebar-strong: #faf3ee;
+  --workspace-sidebar-hover: #41332c;
+  --workspace-sidebar-active: #554035;
+  --workspace-sidebar-line: #574238;
+  --workspace-sidebar-control: #3c2f29;
+  --workspace-sidebar-control-hover: #4b392f;
+  --workspace-sidebar-control-line: #685043;
+  --workspace-sidebar-menu-line: #745a4b;
+  --workspace-mark: #e6b98e;
+  --workspace-mark-ink: #513728;
+}
+
+:root[data-workspace="opencode"] {
+  --workspace-accent: #50545b;
+  --workspace-solid: #50545b;
+  --workspace-hover: #3e4248;
+  --workspace-tint: #eef0f2;
+  --workspace-tint-ink: #626870;
+  --workspace-tint-border: #a7adb5;
+  --workspace-focus: #8a929d;
+  --workspace-sidebar: #2c2e32;
+  --workspace-sidebar-ink: #d1d3d7;
+  --workspace-sidebar-muted: #b1b5bd;
+  --workspace-sidebar-faint: #9da3ad;
+  --workspace-sidebar-strong: #f3f4f5;
+  --workspace-sidebar-hover: #383b40;
+  --workspace-sidebar-active: #464a51;
+  --workspace-sidebar-line: #42464d;
+  --workspace-sidebar-control: #35383d;
+  --workspace-sidebar-control-hover: #41454c;
+  --workspace-sidebar-control-line: #50555e;
+  --workspace-sidebar-menu-line: #5c626c;
+  --workspace-mark: #d4d7dc;
+  --workspace-mark-ink: #34373d;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-workspace="opencode"]:not([data-theme="light"]) {
+    --workspace-accent: #c3c8d0;
+    --workspace-solid: #535962;
+    --workspace-hover: #646c77;
+    --workspace-tint: #2c3036;
+    --workspace-tint-ink: #c2c8d1;
+    --workspace-tint-border: #707985;
+    --workspace-focus: #a1aab7;
+    --workspace-sidebar: #222428;
+    --workspace-sidebar-ink: #d1d3d7;
+    --workspace-sidebar-muted: #b1b5bd;
+    --workspace-sidebar-faint: #9da3ad;
+    --workspace-sidebar-strong: #f3f4f5;
+    --workspace-sidebar-hover: #303339;
+    --workspace-sidebar-active: #3f444c;
+    --workspace-sidebar-line: #42464d;
+    --workspace-sidebar-control: #2c2f34;
+    --workspace-sidebar-control-hover: #393e45;
+    --workspace-sidebar-control-line: #50555e;
+    --workspace-sidebar-menu-line: #5c626c;
+    --workspace-mark: #d4d7dc;
+    --workspace-mark-ink: #34373d;
+  }
+}
+
+:root[data-workspace="opencode"][data-theme="dark"] {
+  --workspace-accent: #c3c8d0;
+  --workspace-solid: #535962;
+  --workspace-hover: #646c77;
+  --workspace-tint: #2c3036;
+  --workspace-tint-ink: #c2c8d1;
+  --workspace-tint-border: #707985;
+  --workspace-focus: #a1aab7;
+  --workspace-sidebar: #222428;
+  --workspace-sidebar-ink: #d1d3d7;
+  --workspace-sidebar-muted: #b1b5bd;
+  --workspace-sidebar-faint: #9da3ad;
+  --workspace-sidebar-strong: #f3f4f5;
+  --workspace-sidebar-hover: #303339;
+  --workspace-sidebar-active: #3f444c;
+  --workspace-sidebar-line: #42464d;
+  --workspace-sidebar-control: #2c2f34;
+  --workspace-sidebar-control-hover: #393e45;
+  --workspace-sidebar-control-line: #50555e;
+  --workspace-sidebar-menu-line: #5c626c;
+  --workspace-mark: #d4d7dc;
+  --workspace-mark-ink: #34373d;
 }

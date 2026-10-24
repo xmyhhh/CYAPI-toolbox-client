@@ -5,6 +5,11 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { collectPalette, renderTheme, transformCss } from '../scripts/theme.mjs';
 import { WINDOW_BACKGROUND } from '../src/lib/appearance.ts';
+import {
+  WORKSPACE_PALETTES,
+  renderWorkspaceTheme,
+  workspaceVariables,
+} from '../scripts/workspace-palettes.mjs';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const appDirectory = path.join(root, 'src', 'app');
@@ -29,8 +34,8 @@ test('every colour in the running stylesheets has a dark variant', () => {
 test('the light appearance keeps the designed colours', () => {
   const palette = collectPalette();
   assert.equal(palette.get('f7f8f6')?.light, '#f7f8f6');
-  assert.equal(palette.get('1c3c32')?.light, '#1c3c32');
-  assert.equal(palette.get('d1e8a9')?.light, '#d1e8a9');
+  assert.equal(workspaceVariables('codex', 'light').sidebar, '#1c3c32');
+  assert.equal(workspaceVariables('codex', 'light').mark, '#d1e8a9');
 });
 
 test('backgrounds become dark and text becomes light', () => {
@@ -43,10 +48,11 @@ test('backgrounds become dark and text becomes light', () => {
   const text = palette.get('293c32');
   assert.ok(text);
   assert.notEqual(text.foreground, text.light);
-  // The sidebar and the brand mark keep their own values.
-  assert.equal(palette.get('1c3c32')?.surface, '#1c3c32');
-  assert.equal(palette.get('d1e8a9')?.surface, '#d1e8a9');
-  assert.equal(palette.get('254d37')?.foreground, '#254d37');
+  // Codex retains the original sidebar and brand identity in both appearances.
+  const workspace = workspaceVariables('codex', 'dark');
+  assert.equal(workspace.sidebar, '#1c3c32');
+  assert.equal(workspace.mark, '#d1e8a9');
+  assert.equal(workspace['mark-ink'], '#254d37');
 });
 
 test('the stylesheet keeps the same colours after the transform', () => {
@@ -76,6 +82,62 @@ test('the palette follows the system and honours an explicit choice', () => {
   assert.match(css, /@media \(prefers-color-scheme: dark\)/);
   assert.match(css, /:root:not\(\[data-theme="light"\]\)/);
   assert.match(css, /:root\[data-theme="dark"\]/);
+});
+
+function contrast(a: string, b: string): number {
+  const luminance = (hex: string) => {
+    const channels = hex
+      .slice(1)
+      .match(/../g)!
+      .map((channel) => {
+        const value = parseInt(channel, 16) / 255;
+        return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+      });
+    return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+  };
+  const values = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (values[0] + 0.05) / (values[1] + 0.05);
+}
+
+test('each workspace has complete, readable light and dark accents', () => {
+  const source = read('native.css') + read('diagnostics.css');
+  const references = [...source.matchAll(/var\(--workspace-([a-z-]+)\)/g)].map((match) => match[1]);
+  for (const workspace of Object.keys(WORKSPACE_PALETTES)) {
+    for (const appearance of ['light', 'dark']) {
+      const vars = workspaceVariables(workspace, appearance);
+      for (const name of references) assert.ok(vars[name], `${workspace}/${appearance}: ${name}`);
+      const background = appearance === 'light' ? '#ffffff' : '#1e2226';
+      const pairs = [
+        [vars.accent, background],
+        ['#ffffff', vars.solid],
+        ['#ffffff', vars.hover],
+        [vars['tint-ink'], vars.tint],
+        [vars.accent, vars.tint],
+        [vars['sidebar-ink'], vars.sidebar],
+        [vars['sidebar-faint'], vars.sidebar],
+        [vars['sidebar-strong'], vars['sidebar-active']],
+        [vars['sidebar-muted'], vars['sidebar-control']],
+        [vars['mark-ink'], vars.mark],
+      ];
+      for (const [ink, surface] of pairs) {
+        assert.ok(
+          contrast(ink, surface) >= 4.5,
+          `${workspace}/${appearance}: ${ink} on ${surface}`,
+        );
+      }
+    }
+  }
+});
+
+test('workspace accents follow system appearance without overriding explicit light', () => {
+  const css = renderWorkspaceTheme();
+  for (const workspace of Object.keys(WORKSPACE_PALETTES)) {
+    assert.ok(css.includes(`:root[data-workspace="${workspace}"] {`));
+    assert.ok(css.includes(`:root[data-workspace="${workspace}"]:not([data-theme="light"])`));
+    assert.ok(css.includes(`:root[data-workspace="${workspace}"][data-theme="dark"]`));
+  }
+  // The identity layer must not recolour status colours, charts or page surfaces.
+  assert.doesNotMatch(css, /--t-|--surface-muted|--line:/);
 });
 
 test('the native window background follows the page surface', () => {

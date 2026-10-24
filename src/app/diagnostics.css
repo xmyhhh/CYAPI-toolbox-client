@@ -265,7 +265,7 @@
   background: white;
 }
 .d-page textarea:focus-visible {
-  outline: 2px solid #72a589;
+  outline: 2px solid var(--workspace-focus);
   outline-offset: 2px;
 }
 .d-log-window {
