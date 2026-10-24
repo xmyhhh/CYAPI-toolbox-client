@@ -1,8 +1,4 @@
 //! Shared validation for the model choices exposed by the local configuration editors.
-pub const EFFORTS: &[&str] = &[
-    "", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
-];
-
 pub fn models(default: &str, selected: &[String]) -> Result<Vec<String>, String> {
     if selected.len() > 200 {
         return Err("最多配置 200 个模型".into());

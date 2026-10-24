@@ -105,15 +105,15 @@ macOS 上以下功能与 Windows 一致可用：Skill 安装与卸载、MCP 写�
 
 ## 模型接入：Codex
 
-工作区切换到 Codex 后，「模型接入」提供全局 API 地址、API Key、模型 ID、推理强度和恢复入口。无需启动 Skill 服务端。采用 Responses API，保存后需完全关闭 Codex（包括托盘和后台进程）再重新启动，切换至 API Key 认证；已有会话仍使用开始时读取的 URL，切换线路后需重启 Codex 并新建会话，才会使用新线路。当前不提供登录、代理转发、多供应商方案或联网验证服务商。
+工作区切换到 Codex 后，「模型接入」提供全局 API 地址、API Key、模型 ID、推理强度、上下文窗口和恢复入口。无需启动 Skill 服务端。采用 Responses API，保存后需完全关闭 Codex（包括托盘和后台进程）再重新启动，切换至 API Key 认证；已有会话仍使用开始时读取的 URL，切换线路后需重启 Codex 并新建会话，才会使用新线路。当前不提供登录、代理转发、多供应商方案或联网验证服务商。
 
-三个模型接入页的模型字段都有「获取模型列表」。点击后由桌面端直接请求当前 API 地址的 OpenAI 兼容 `/models` 或 Anthropic `/v1/models`，使用当前填写的 API Key；返回的模型以复选列表显示，可勾选多个并指定一个默认模型，同时仍可手动添加其他 ID。请求不经过目录服务，获取列表不会立即写入配置，点击「保存配置」后才保存所选模型；鉴权失败、接口不存在、超时和网络错误会直接显示在模型字段下方，不自动打开日志窗口。
+三个模型接入页的模型字段都有「获取模型列表」。点击后由桌面端直接请求当前 API 地址的 OpenAI 兼容 `/models` 或 Anthropic `/v1/models`，使用当前填写的 API Key；返回的模型在独立添加区搜索、勾选并确认添加，再从已配置模型中选择默认模型，也可手动添加其他 ID。请求不经过目录服务，获取列表不会立即写入配置，点击「保存配置」后才保存所选模型；鉴权失败、接口不存在、超时和网络错误会直接显示在模型字段下方，不自动打开日志窗口。
 
 三个工作区的「CYAPI 专属」在密钥下方显示「余额与额度」。填入密钥并停止输入 600 毫秒后自动查询，读取已有配置、保存配置或切换线路后也会刷新；可点击「刷新余额」重试。桌面端直接向所选线路的 `{baseUrl}/usage` 发送带 Bearer API Key 的 GET 请求，优先显示 `rate_limits` 中的全部周期额度及重置时间，没有周期额度时依次读取 `quota`、`balance` 或 `remaining`。Claude Code 查询使用线路清单中保留 `/v1` 的原始 API 地址。请求不经过目录服务，余额不写入本机存储；失败提示只显示在余额卡片内。
 
 配置目录尊重 `CODEX_HOME`，默认 `~/.codex`。使用 TOML 编辑器保留其他设置、注释及原有供应商定义，新供应商标识为 `cyapi-toolbox`。Key 写入本机 `auth.json`，配置页通过本机 IPC 读取已有 Key 并填入密码框，默认掩码显示，点击眼睛可显示或隐藏；不写入浏览器存储、不发给目录服务。清空后保存仍保留原 Key。写入 `cli_auth_credentials_store = "file"` 和 `forced_login_method = "api"`，使 Codex 使用该文件中的 API Key。其他登录字段保留在原 JSON 中，当前认证模式会切换为 `apikey`。
 
-保存前在工具箱数据目录的 `codex-config/previous.json` 备份原始文件；配置和备份均限制为当前用户访问。备份包含原登录凭据，勿分享。恢复会还原上次保存前两个文件的原始字节；首次创建的文件会删除。同值保存保留之前的恢复点。保存校验模型、线路与认证设置的内容版本：后台新增项目记录、修改 MCP、刷新登录令牌或调整文件排版时，保存会保留这些最新内容，不再误报「配置已变化」。模型、线路、Key、登录方式或账号发生变化时仍拒绝覆盖，需重新读取核对，当前表单输入会保留。提交时再次校验两个文件，恢复仍严格检查完整文件版本，不能覆盖后续外部修改。多文件写入使用暂存和失败回滚，不保证断电事务。
+保存前在工具箱数据目录的 `codex-config/previous.json` 备份原始文件；配置和备份均限制为当前用户访问。备份包含原登录凭据，勿分享。恢复会还原上次保存前两个文件的原始字节；首次创建的文件会删除。同值保存保留之前的恢复点。保存校验模型、线路与认证设置的内容版本：后台新增项目记录、修改 MCP、刷新登录令牌或调整文件排版时，保存会保留这些最新内容，不再误报「配置已变化」。模型、上下文窗口、线路、Key、登录方式或账号发生变化时仍拒绝覆盖，需重新读取核对，当前表单输入会保留。提交时再次校验两个文件，恢复仍严格检查完整文件版本，不能覆盖后续外部修改。多文件写入使用暂存和失败回滚，不保证断电事务。
 
 本入口编辑全局 `config.toml` 和 `auth.json`，配置多模型时还会生成下文所述的不可变模型目录文件。新版 Codex 的命名 Profile 使用独立的 `<name>.config.toml` 文件；以 `--profile` 启动时，Profile 中同名字段可以覆盖全局值。
 
@@ -125,7 +125,7 @@ macOS 上以下功能与 Windows 一致可用：Skill 安装与卸载、MCP 写�
 
 Claude Code 通过 Anthropic Messages API 请求 `{baseUrl}/v1/messages`，因此界面显示和保存的地址不含末尾 `/v1`；从 CYAPI 线路清单或手动粘贴带入的 `/v1` 会被自动去掉。线路选择与 Codex 共用服务器分发的清单，不在本机预设服务地址。
 
-保存管理上述 API 字段、默认模型、模型选择器及思考等级，具体映射见下文「模型与思考等级」，保留 `settings.json` 的其他键；文件不是 JSON 对象、`env` 不是对象或存在外部并发修改时拒绝写入。保存前在工具箱数据目录的 `claude-config/previous.json` 备份原始字节，恢复会还原上次保存前的文件（首次创建的文件会删除）。AUTH_TOKEN 只保存在本机，配置页通过本机 IPC 读取并填入密码框，默认掩码显示；不写入浏览器存储、不发给目录服务。已运行的 Claude Code 会话不会重载配置，需完全关闭当前会话和后台进程后重新启动。
+保存管理上述 API 字段、默认模型、模型选择器、思考等级及显式上下文覆盖，具体映射见下文「模型与思考等级」「模型上下文窗口」，保留 `settings.json` 的其他键；文件不是 JSON 对象、`env` 不是对象或存在外部并发修改时拒绝写入。保存前在工具箱数据目录的 `claude-config/previous.json` 备份原始字节，恢复会还原上次保存前的文件（首次创建的文件会删除）。AUTH_TOKEN 只保存在本机，配置页通过本机 IPC 读取并填入密码框，默认掩码显示；不写入浏览器存储、不发给目录服务。Claude Code 会重载多数配置，但默认模型与推理等级在会话启动时读取；请启动新会话使用新的接入设置，当前会话可用 `/model`、`/effort` 切换模型与等级。
 
 状态区通过 `where claude` 检查 PATH 中是否存在命令，并读取 `~/.claude/.credentials.json` 判断当前是 API Token 还是 Claude 登录。「日志」按 Claude Code 的 JSONL、会话索引、子代理与 debug 格式提供会话时间线、用量及错误证据，见 [日志分析](DIAGNOSTICS.md)。
 
@@ -133,7 +133,7 @@ Claude Code 通过 Anthropic Messages API 请求 `{baseUrl}/v1/messages`，因�
 
 工作区切换到 OpenCode 后，「模型接入」优先编辑 `OPENCODE_CONFIG` 指定的文件（相对路径按工具箱进程的工作目录解析）。未指定时，配置目录尊重 `XDG_CONFIG_HOME`，默认 `~/.config/opencode`；`opencode.jsonc` 与 `opencode.json` 同时存在时使用前者。页面提供 CYAPI 线路、自定义 API 地址、API Key、模型 ID、CLI 检测和恢复入口。显式配置文件不会改变全局 Skill 的安装目录。
 
-写入采用 OpenCode 1.x 兼容的 `provider.cyapi` 结构：`npm = "@ai-sdk/openai-compatible"`、`api`、`options.apiKey`、独立的 `models.<别名>.id` 与模型思考等级，根 `model` 指向所选默认模型条目（兼容原有 `cyapi/default`）。OpenCode 2 仍接受这些受支持的 V1 字段；API 地址通常以 `/v1` 结尾，保存后需完全关闭 OpenCode 再重新启动。保存只修改上述字段，其他 provider、MCP、主题和权限设置保持不变；通过 JSONC CST 编辑保留注释和未修改部分的排版。
+同时识别原生 V2 的 `providers.cyapi` 与兼容配置 `provider.cyapi`：已有条目保持原格式，新条目采用 V2 `package`、`settings.baseURL/apiKey`、`models.<别名>.modelID` 与模型级 `settings.reasoningEffort`。两种 CYAPI provider 同时存在时优先编辑 V2。根 `model` 指向所选默认模型条目，兼容原有别名。API 地址通常以 `/v1` 结尾。OpenCode V2 自动重载配置，必要时使用 `/reload`；会话已选模型与 variant 可覆盖默认设置。保存保留其他 provider、MCP 和权限设置，通过 JSONC CST 编辑保留注释和未修改部分的排版。
 
 保存前在工具箱数据目录的 `opencode-config/previous.json` 备份原始字节，恢复会还原上次保存前的文件（首次创建的文件会删除）。外部程序修改过文件、revision 过期或目标不是 JSON 对象时拒绝写入。API Key 只保存在本机，配置页通过本机 IPC 读取并填入密码框，默认掩码显示；不写入浏览器存储、不发给目录服务。状态区通过 `where opencode` 检查 PATH 中是否存在命令。「日志」兼容 OpenCode 新旧 SQLite、旧 JSON 存储及运行文本，可查看会话、工具状态、用量与错误证据，见 [日志分析](DIAGNOSTICS.md)。
 
@@ -156,15 +156,25 @@ CodeGraph 需要先安装 Node.js 18+ 和 `npm install -g @colbymchenry/codegrap
 
 ## 模型与思考等级
 
-Codex、Claude Code 和 OpenCode 的「模型接入」均支持一个默认模型和多个可用模型。「获取模型列表」后勾选需要的模型，或手动添加模型 ID，点击「设为默认」切换默认模型，最后统一保存。当前默认模型始终包含在可用模型中；要移除它，先选择另一个默认模型。获取列表、搜索和勾选不会立即改写本机配置。接口地址或 Key 变化时会清空获取结果，保留尚未保存的选择。
+三个工具的「模型接入」均将已配置列表与「添加模型」区域分开。先从 API 列表勾选并确认添加，或手动输入模型 ID，再从已配置模型中选择一个默认模型。添加多个模型用于在工具内切换，不表示同时调用、自动调度或故障转移。当前默认模型不能直接移除，需先切换；Claude Code 也可选择使用工具自身默认模型。所有更改统一保存，接口地址或 Key 变化只清空发现结果，不清空配置草稿。
 
-思考等级由当前工作区分别保存。Codex / OpenCode 提供 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`；Claude Code 提供 `low`、`medium`、`high`、`xhigh`。选「默认」移除本工具编辑的显式等级。具体支持的等级由模型和 API 服务商决定，模型列表接口通常不提供这些能力信息。
+OpenCode / Claude Code 每个模型都有独立的「默认推理等级」，展开「配置」后明确编辑。未编辑字段不写入；清空只移除该模型的显式等级，不影响其他模型、不等于关闭思考，上层配置仍可能生效。仅切换默认模型或改地址，不再批量统一原有等级。现有未知值可保留，不阻塞无关配置保存。模型列表只提供 ID，不验证等级能力；手动值与候选值不是支持承诺，未确认时保持「不覆盖」。本次不增加付费探测请求。
 
-- Codex 写入全局 `model`、`model_reasoning_effort`，多模型通过 `model_catalog_json` 指向 `CODEX_HOME/cyapi-models/<内容哈希>.json`。生成时复用已有目录或 `models_cache.json` 的模型元数据；没有可用缓存时，尝试本机 Codex CLI 的 `debug models --bundled`（离线、最多 5 秒）。因此首次配置多模型前，需启动过新版 Codex，或安装支持该命令的 CLI。生成失败会保留原配置与凭据。模型目录保留 Codex 自身的代理指令，已有型号保留能力字段；自定义 ID 的能力需以服务商实际支持为准。
-- Claude Code 写入 `modelPicker.options`（需要 Claude Code 2.1.242+）、同步默认 `model` 与 `ANTHROPIC_MODEL`，并同步 `CLAUDE_CODE_EFFORT_LEVEL`、`effortLevel` 和所选模型的 `modelSettings`（2.1.251+），兼容别名的等级覆盖。保留选项标签、说明、其他模型的设置与现有组织模型限制。
-- OpenCode 为每个所选模型保留独立的 `provider.cyapi.models` 条目和 `options.reasoningEffort`，默认 `model` 指向实际条目。已有别名、模型选项、variants、JSONC 注释、其他 provider 和 MCP 设置保留；取消选择的 CYAPI 模型条目会移除。
+- Codex 保留独立的「全局推理等级」，写入 `model_reasoning_effort`，不是逐模型默认设置。多模型通过 `model_catalog_json` 指向 `CODEX_HOME/cyapi-models/<内容哈希>.json`。生成时复用已有目录或 `models_cache.json` 元数据，没有可用缓存时尝试隔离环境中的 Codex CLI `debug models --bundled`（离线、最多 5 秒）。失败则保留原配置与凭据。已知模型能力及默认等级保留；不会因全局选择等级而向支持列表追加值，未知模型不再补全所有等级或虚构默认等级。
+- Claude Code 写入 `modelPicker.options`（2.1.242+）、同步默认 `model` 与 `ANTHROPIC_MODEL`；只在明确编辑某个模型时修改其 `modelSettings.<规范名称>.effortLevel`（2.1.251+）。可持久化的值是 `low/medium/high/xhigh`，不代表网关全部支持。已有 `CLAUDE_CODE_EFFORT_LEVEL` 和全局 `effortLevel` 默认保留并明确提示，只有点「切换为逐模型配置」并保存才移除本文件这两项。无法可靠解析的内置别名需使用完整模型 ID，不猜测版本。保留其他模型设置、标签、说明及组织限制。
+- OpenCode V2 在模型级 `settings.reasoningEffort` 保存；兼容条目保留原有 `options.reasoningEffort` 形式。已有别名、其他选项、variants、JSONC 注释、其他 provider 与 MCP 设置保留；取消选择的 CYAPI 模型条目移除。模型默认推理设置可被当前会话 variant 覆盖，默认模型本身不等于选定 variant。同一 API ID 的多个别名等级不同时显示冲突并分别保留；明确编辑或移除该 ID 的等级会作用于其全部别名。
 
-三端保存前均备份，重新读取会回显模型与等级，恢复会还原上次完整配置。Codex 的目录文件按内容保存并保留历史文件，恢复旧配置引用时仍可读取原目录。保存后请完全退出对应客户端及后台进程，再启动新会话。
+三端保存前均备份，重新读取会回显，恢复还原上次完整配置。Codex 的不可变模型目录保留历史文件，恢复旧引用仍可读取。Codex 配置与目录在新会话启动时加载；Claude Code 的模型和推理等级需在新会话使用或在当前会话用 `/model`、`/effort` 切换；OpenCode V2 自动重载，必要时 `/reload`，不要求关闭后台进程。
+
+## 模型上下文窗口
+
+三个工作区均可在「模型接入」展开配置上下文窗口，单位为 tokens（例如 `200000`，不是字符数或 `200K`）。默认不覆盖工具或模型原值；仅在明确编辑后写入，移除覆盖与撤销本次修改是不同操作。旧配置中的未知值可原样保留，不阻塞只改地址或默认模型。新值须为 `1..=9007199254740991` 内的整数，这是传输安全边界，不是模型能力上限。数值不能扩展服务商实际支持的窗口；本入口不设置最大输出长度、不探测模型能力，也不自动修改压缩阈值。
+
+- **OpenCode：逐模型**写入 `models.<别名>.limit.context`，同时支持原生 V2 和已有兼容格式，保留 `limit.input/output` 和其他模型配置。同一 API ID 的多个别名数值不一致时明确显示冲突；不编辑则分别保留，显式设置或移除该 ID 的覆盖时更新全部对应别名。损坏的非对象 `limit` 不会被静默覆盖。
+- **Codex：全局覆盖**写入 `config.toml` 的 `model_context_window`，不是逐模型设置，切换默认模型后仍适用。命名 Profile 的同名字段可能覆盖全局值；不修改 `model_auto_compact_token_limit` 或不可变模型目录中的能力元数据。该字段也纳入保存版本检查，防止覆盖其他窗口的修改。
+- **Claude Code：有条件的全局覆盖**写入 `settings.json` 的 `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS` 字符串，不伪装成逐模型配置。通常只有未识别、不以 `claude-` 开头且无 `[1m]` 的自定义 ID 可直接生效；已识别模型或裸 `claude-` ID 还需 `DISABLE_COMPACT`（会关闭全部压缩），未识别的 `[1m]` ID 还涉及 `CLAUDE_CODE_DISABLE_1M_CONTEXT`。具体取决于 Claude Code 版本和模型识别，见[官方生效条件](https://code.claude.com/docs/en/model-config#which-ids-claude_code_max_context_tokens-applies-to)。工具箱不会自动设置这些开关、追加 `[1m]` 或修改模型身份，也不把 `autoCompactWindow` / `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 当成上下文窗口。修改后请重新启动 Claude Code 并新建会话核对；Shell 环境变量或项目配置可能覆盖本文件。
+
+上下文设置与原有推理等级各自独立，保存与恢复沿用各工具的备份、并发检查及生效方式。清除仅删除本文件的显式覆盖，不保证清除其他配置层的设置。
 
 ## 软件接入
 

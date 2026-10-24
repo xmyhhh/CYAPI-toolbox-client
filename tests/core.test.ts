@@ -7,11 +7,102 @@ import { catalogCategories, filterCatalog } from '../src/lib/catalog.ts';
 import { canManageInstallation, visibleInWorkspace } from '../src/lib/installations.ts';
 import type { NativeRecord } from '../src/lib/api/native.ts';
 import {
+  configuredModels,
+  modelEffort,
+  claudeModelEffort,
+  changeModelEffort,
+  selectedEffortChanges,
+  contextWindowText,
+  parseContextWindow,
+  contextWindowChange,
+  selectedContextChanges,
+} from '../src/lib/model-settings.ts';
+import {
   integrationManifest,
   integrationComponent,
   integrationLabel,
 } from '../src/features/integrations/model.ts';
 import type { IntegrationDescriptor, IntegrationEntry } from '../src/lib/api/native.ts';
+
+test('model selection keeps a single default in the configured set without duplicates', () => {
+  assert.deepEqual(configuredModels([' a ', 'b', 'a', ''], 'b'), ['a', 'b']);
+  assert.deepEqual(configuredModels(['a'], 'c'), ['a', 'c']);
+  assert.deepEqual(configuredModels([], ''), []);
+});
+
+test('new full Claude IDs reuse existing canonical settings without guessing aliases or gateway IDs', () => {
+  const efforts = { 'claude-sonnet-4-6': 'high', 'gateway-20260101': 'low' };
+  const added = 'claude-sonnet-4-6-20260101';
+  assert.equal(claudeModelEffort(added, efforts), 'high');
+  assert.equal(claudeModelEffort(`${added}[1m]`, efforts), 'high');
+  assert.deepEqual(changeModelEffort({}, added, '', claudeModelEffort(added, efforts)), {
+    [added]: '',
+  });
+  assert.equal(claudeModelEffort(added, { ...efforts, [added]: 'low' }), 'low');
+  assert.equal(claudeModelEffort('claude-sonnet-4-6', { [added]: 'medium' }), 'medium');
+  assert.equal(
+    claudeModelEffort('claude-sonnet-4-6', {
+      [added]: 'medium',
+      'claude-sonnet-4-6-20260201': 'low',
+    }),
+    '',
+  );
+  assert.equal(claudeModelEffort('sonnet', efforts), '');
+  assert.equal(claudeModelEffort('sonnet', efforts, { sonnet: 'claude-sonnet-4-6' }), 'high');
+  assert.equal(claudeModelEffort('gateway', efforts), '');
+  assert.equal(claudeModelEffort('constructor', {}), '');
+});
+
+test('per-model effort patches preserve untouched settings and distinguish clear from preserve', () => {
+  const efforts = { a: 'high', b: 'low', canonical: 'future-level' };
+  assert.equal(modelEffort('alias', efforts, { alias: 'canonical' }), 'future-level');
+  assert.equal(modelEffort('new', efforts), '');
+  const changed = changeModelEffort({}, 'a', 'xhigh', efforts.a);
+  assert.deepEqual(changed, { a: 'xhigh' });
+  assert.deepEqual(efforts, { a: 'high', b: 'low', canonical: 'future-level' });
+  assert.deepEqual(changeModelEffort(changed, 'a', 'high', efforts.a), {});
+  assert.deepEqual(changeModelEffort({}, 'a', '', efforts.a), { a: '' });
+  assert.deepEqual(changeModelEffort({}, 'new', '', ''), {});
+  // Conflicting OpenCode aliases have no common original; clearing must still be explicit.
+  assert.deepEqual(changeModelEffort({}, 'a', '', '', true), { a: '' });
+  assert.deepEqual(changeModelEffort({}, 'a', 'high', '', true), { a: 'high' });
+  assert.equal(modelEffort('constructor', {}), '');
+  assert.deepEqual(Object.entries(changeModelEffort({}, '__proto__', 'high', '')), [
+    ['__proto__', 'high'],
+  ]);
+  assert.deepEqual(selectedEffortChanges({ a: '', b: 'high', c: 'low' }, ['a'], 'b'), {
+    a: '',
+    b: 'high',
+  });
+  assert.deepEqual(selectedEffortChanges({ a: 'high' }, ['b'], 'b'), {});
+});
+
+test('context overrides distinguish preserve, clear and integer tokens without coercing old values', () => {
+  assert.equal(contextWindowText(null), '');
+  assert.equal(contextWindowText(undefined), '');
+  assert.equal(contextWindowText(200000), '200000');
+  assert.equal(contextWindowText('unknown-old-value'), 'unknown-old-value');
+  assert.equal(contextWindowText({ future: true }), '{"future":true}');
+  assert.equal(contextWindowChange(undefined), undefined);
+  assert.deepEqual(contextWindowChange(''), { value: null });
+  assert.deepEqual(contextWindowChange('400000'), { value: 400000 });
+  assert.equal(parseContextWindow('9007199254740991'), Number.MAX_SAFE_INTEGER);
+  for (const invalid of ['0', '-1', '1.5', '200K', '1e6', ' 200000 ', '9007199254740992'])
+    assert.throws(() => parseContextWindow(invalid), /上下文窗口/);
+  assert.deepEqual(selectedContextChanges({ a: '', b: '200000', removed: 'bad' }, ['a'], 'b'), {
+    a: null,
+    b: 200000,
+  });
+  assert.deepEqual(selectedContextChanges({}, ['a'], 'a'), {});
+  assert.deepEqual(
+    Object.entries(selectedContextChanges({ ['__proto__']: '1' }, ['__proto__'], '')),
+    [['__proto__', 1]],
+  );
+  // A conflicting aliases clear must remain explicit even when its representative is null.
+  assert.deepEqual(selectedContextChanges(changeModelEffort({}, 'a', '', '', true), ['a'], 'a'), {
+    a: null,
+  });
+});
 
 test('software tutorials accept older catalogs and never select a foreign platform binary', () => {
   const legacy = {

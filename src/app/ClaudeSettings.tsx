@@ -11,7 +11,6 @@ import {
 } from 'lucide-react';
 import { nativeAvailable, nativeCall } from '../lib/api/native';
 import type { ClaudeConfiguration } from '../lib/api/native';
-import { RestartPrompt } from '../components/Primitives';
 import {
   CYAPI_DEFAULT_URL,
   cachedCyapiRoutes,
@@ -21,8 +20,11 @@ import {
 } from '../lib/api/cyapi';
 import type { CyapiRoutesView } from '../lib/api/cyapi';
 import { ModelPicker } from './ModelPicker';
-import { ReasoningEffortPicker } from './ReasoningEffortPicker';
+import { ModelReasoningSettings } from './ModelReasoningSettings';
+import { changeModelEffort, claudeModelEffort, selectedEffortChanges } from '../lib/model-settings';
 import { CyapiBalance } from './CyapiBalance';
+import { ContextWindowSettings } from './ContextWindowSettings';
+import { contextWindowChange, contextWindowText } from '../lib/model-settings';
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -53,11 +55,12 @@ export function ClaudeSettings() {
   const [token, setToken] = useState('');
   const [model, setModel] = useState('');
   const [models, setModels] = useState<string[]>([]);
-  const [effort, setEffort] = useState('');
+  const [effortChanges, setEffortChanges] = useState<Record<string, string>>({});
+  const [clearEffortOverrides, setClearEffortOverrides] = useState(false);
+  const [contextDraft, setContextDraft] = useState<string>();
   const [showKey, setShowKey] = useState(false);
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState<{ text: string; error?: boolean }>();
-  const [restartPrompt, setRestartPrompt] = useState(false);
   const [mode, setMode] = useState<'cyapi' | 'custom'>('cyapi');
   const [routes, setRoutes] = useState<CyapiRoutesView>(
     () => cachedCyapiRoutes() ?? defaultCyapiRoutes,
@@ -72,7 +75,9 @@ export function ClaudeSettings() {
     setToken(savedToken ?? '');
     setModel(next.model);
     setModels(next.models ?? []);
-    setEffort(next.reasoningEffort ?? '');
+    setEffortChanges({});
+    setClearEffortOverrides(false);
+    setContextDraft(undefined);
     setShowKey(false);
     setMode(
       routes.manifest.routes.some((route) => sameRoute(anthropicBase(route.baseUrl), url))
@@ -147,15 +152,16 @@ export function ClaudeSettings() {
           authToken: token,
           model,
           models,
-          reasoningEffort: effort,
+          modelEffortChanges: selectedEffortChanges(effortChanges, models, model),
+          clearEffortOverrides,
+          contextWindowChange: contextWindowChange(contextDraft),
           revision: view.revision,
         },
       });
       apply(next);
       setNotice({
-        text: '已写入 Claude Code 配置。请完全关闭当前 Claude Code 会话和后台进程，重新启动后生效。',
+        text: '已写入 Claude Code 配置。请启动新会话使用新的接入设置；当前会话的模型与等级可用 /model、/effort 切换。',
       });
-      setRestartPrompt(true);
     } catch (error) {
       setNotice({ text: errorText(error), error: true });
     } finally {
@@ -174,9 +180,8 @@ export function ClaudeSettings() {
         }),
       );
       setNotice({
-        text: '已恢复上次保存前的 settings.json。请完全关闭当前 Claude Code 会话后重新启动。',
+        text: '已恢复上次保存前的 settings.json。请启动新会话使用恢复后的接入设置。',
       });
-      setRestartPrompt(true);
     } catch (error) {
       setNotice({ text: errorText(error), error: true });
     } finally {
@@ -325,6 +330,37 @@ export function ClaudeSettings() {
               disabled={busy || !view}
             />
           )}
+          {(view?.effortOverrides?.environment || view?.effortOverrides?.global) && (
+            <div className="n-model-override" role="status">
+              <strong>检测到统一推理等级设置</strong>
+              {view.effortOverrides.environment && (
+                <p>
+                  <code>env.CLAUDE_CODE_EFFORT_LEVEL = {view.effortOverrides.environment}</code>
+                  （会覆盖逐模型设置）
+                </p>
+              )}
+              {view.effortOverrides.global && (
+                <p>
+                  <code>effortLevel = {view.effortOverrides.global}</code>（适用模型的全局回退值）
+                </p>
+              )}
+              <p>
+                默认保留这两项。切换为逐模型配置后，保存时将删除本文件中的上述设置，未单独设置的模型回到其他配置或工具默认；不会自动复制统一等级。
+              </p>
+              <button
+                type="button"
+                className="n-button"
+                disabled={busy || !view}
+                aria-pressed={clearEffortOverrides}
+                onClick={() => setClearEffortOverrides(!clearEffortOverrides)}
+              >
+                {clearEffortOverrides ? '撤销切换，保留统一设置' : '切换为逐模型配置'}
+              </button>
+              {clearEffortOverrides && (
+                <p>待保存：将移除上述统一设置。Shell 环境变量或项目配置仍可能覆盖本文件。</p>
+              )}
+            </div>
+          )}
           <ModelPicker
             id="claude-model"
             value={model}
@@ -335,14 +371,50 @@ export function ClaudeSettings() {
             apiKey={token}
             api="anthropic"
             disabled={busy || !view}
-            placeholder="留空使用 Claude Code 默认模型"
+            placeholder="输入完整模型 ID；默认模型可选择由 Claude Code 决定"
+            renderModelSettings={(id, index) => {
+              const original = claudeModelEffort(
+                id,
+                view?.modelEfforts ?? {},
+                view?.modelEffortKeys,
+              );
+              return (
+                <ModelReasoningSettings
+                  id={`claude-effort-${index}`}
+                  model={id}
+                  original={original}
+                  value={Object.hasOwn(effortChanges, id) ? effortChanges[id] : original}
+                  onChange={(value) =>
+                    setEffortChanges((changes) => changeModelEffort(changes, id, value, original))
+                  }
+                  api="anthropic"
+                  disabled={busy || !view}
+                />
+              );
+            }}
           />
-          <ReasoningEffortPicker
-            id="claude-effort"
-            value={effort}
-            onChange={setEffort}
-            api="anthropic"
-          />
+          <ContextWindowSettings
+            id="claude-context"
+            scope="Claude Code 全局"
+            original={view?.contextWindow}
+            draft={contextDraft}
+            onChange={(value) =>
+              setContextDraft(value === contextWindowText(view?.contextWindow) ? undefined : value)
+            }
+            onReset={() => setContextDraft(undefined)}
+            disabled={busy || !view}
+          >
+            <p className="n-config-note">
+              高级覆盖：写入
+              settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS，不是逐模型设置，也不保证对当前 ID
+              生效。请重新启动 Claude Code 并新建会话核对；Shell 环境和项目配置可能覆盖本文件。
+            </p>
+            <p className="n-config-note">
+              通常仅未识别、不以 claude- 开头且无 [1m] 的自定义 ID 可直接生效。已识别模型或裸
+              claude- ID 还需 DISABLE_COMPACT（会关闭全部压缩）；未识别的 [1m] ID 还涉及
+              CLAUDE_CODE_DISABLE_1M_CONTEXT。工具箱不会自动修改这些开关、模型 ID 或压缩阈值。
+            </p>
+          </ContextWindowSettings>
           {view?.apiKeyConfigured && (
             <p className="n-config-note">
               settings.json 里还设置了 ANTHROPIC_API_KEY；如果请求鉴权异常，请只保留 AUTH_TOKEN 或
@@ -352,7 +424,7 @@ export function ClaudeSettings() {
         </fieldset>
         <p className="n-config-note">
           Anthropic 接口地址末尾的 /v1 会自动去掉。保存前自动备份 settings.json，AUTH_TOKEN
-          仅保存在本机。保存后需完全关闭当前 Claude Code 会话和后台进程再重新启动。
+          仅保存在本机。保存后请启动新会话；当前会话的模型与等级可用 /model、/effort 切换。
         </p>
         <div className="n-codex-actions">
           {view?.canRestore && (
@@ -390,12 +462,6 @@ export function ClaudeSettings() {
             )}
           </p>
         </details>
-      )}
-      {restartPrompt && (
-        <RestartPrompt
-          target="Claude Code（包括当前会话和后台进程）"
-          onClose={() => setRestartPrompt(false)}
-        />
       )}
     </section>
   );

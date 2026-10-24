@@ -12,6 +12,10 @@ CYAPI Toolbox 的桌面客户端，面向 Codex / Claude Code / OpenCode 的本�
 
 普通用户从官网下载：<https://tool.cyapi.cyou/#download>。GitHub Releases 保留各版本安装包与免构建产物。
 
+如果旧版点击「立即更新」后一直显示「正在下载更新安装包」，可退出客户端，用系统浏览器打开上述官网，下载对应系统的安装包后手动安装。无需先卸载或清除工具箱数据。
+
+更新下载会显示百分比与已下载大小，日志中记录连接、下载和校验阶段。主线路下载的超时上限为 20 秒，失败后自动尝试直连源站（超时上限 120 秒）；等待期间仍可使用「从官网下载」，更新下载不会占用本地配置服务锁。
+
 ## 开发
 
 Node 22.12+ 与 Rust stable（Windows 需 MSVC + SDK，macOS 需 Xcode CLT）。
@@ -42,7 +46,7 @@ npm run desktop:build  # 桌面安装包，输出到 release/
 | `SITE_SSH_USER` | 部署 SSH 用户 |
 | `SITE_DEPLOY_KEY` | 部署专用私钥（公钥加入服务器 `authorized_keys`） |
 
-未配置时前四步照常：构建、测试、Release 与产物都在,仅跳过官网部署。
+正式发布必须配置上述 Secrets；缺失时 GitHub Release 仍可生成，但官网部署会明确失败，不再静默跳过。CI 在发布与官网构建前均检查 Windows 安装版／免安装版及 macOS ARM64／Intel x64 双架构 DMG，缺失或空文件会阻止发布。
 
 ## 目录结构
 

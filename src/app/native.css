@@ -1720,8 +1720,73 @@ code {
   gap: 12px;
   padding: 8px 10px;
 }
-.n-model-choice + .n-model-choice {
+.n-model-choice + .n-model-choice,
+.n-model-configured + .n-model-configured {
   border-top: 1px solid var(--line);
+}
+.n-model-heading {
+  font-size: 12px;
+  font-weight: 600;
+}
+.n-model-field > .n-config-note {
+  margin-bottom: 14px;
+}
+.n-model-field > .n-model-list {
+  max-height: none;
+}
+.n-model-id {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.n-model-settings {
+  padding: 0 10px 10px;
+}
+.n-model-effort-summary {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.n-model-effort-summary strong {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.n-context-window {
+  margin-top: 8px;
+}
+.n-context-window .n-model-effort-summary > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.n-model-effort-editor {
+  margin-top: 10px;
+}
+.n-model-effort-editor .n-inline-action + .n-inline-action {
+  margin-left: 10px;
+}
+.n-model-add,
+.n-model-override {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.n-model-add > input,
+.n-model-add > .n-button {
+  margin-top: 10px;
+}
+.n-model-override {
+  margin-top: 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.n-model-override p {
+  margin: 8px 0;
+  overflow-wrap: anywhere;
 }
 .n-config-field .n-model-choice label {
   display: flex;

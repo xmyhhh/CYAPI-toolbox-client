@@ -81,6 +81,7 @@ fn toolbox_cancel() {
 async fn toolbox(
     request: Request,
     state: tauri::State<'_, AppService>,
+    app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     let operation = request
         .operation_id
@@ -191,28 +192,74 @@ async fn toolbox(
                     }
                 }
             }
-            let result = service
-                .lock()
-                .map_err(|_| "安装服务暂不可用".to_string())
-                .and_then(|mut state| {
-                    let service = state.as_mut().map_err(|error| error.clone())?;
-                    match prefetched {
-                        Some(Prefetched::Catalog(path, fetched)) => {
-                            let automatic = matches!(
-                                request.action.as_str(),
-                                "catalog-read" | "mcp-catalog-read" | "integrations-read"
+            let result = if action == "open-url" {
+                crate::update::open(request.url.as_deref().unwrap_or_default())
+            } else if matches!(action.as_str(), "update-download" | "update-install") {
+                // Copy only immutable update settings, then release the global
+                // lock before any network request or large file operation.
+                let context = service
+                    .lock()
+                    .map_err(|_| "安装服务暂不可用".to_string())
+                    .and_then(|state| {
+                        state
+                            .as_ref()
+                            .map(update::UpdateContext::snapshot)
+                            .map_err(|error| error.clone())
+                    });
+                context.and_then(|context| {
+                    if action == "update-download" {
+                        use tauri::Emitter;
+                        update::download(&context, |stage, downloaded, total| {
+                            let _ = app.emit(
+                                "toolbox-update-progress",
+                                update::UpdateProgress {
+                                    operation_id: request.operation_id.clone().unwrap_or_default(),
+                                    stage,
+                                    downloaded,
+                                    total,
+                                },
                             );
-                            service.apply_catalog_read(path, fetched, automatic)?;
-                            if path == "/api/catalog" {
-                                Ok(service.status())
-                            } else {
-                                service.dispatch(request)
-                            }
-                        }
-                        Some(Prefetched::Update(bytes)) => service.apply_update_check(bytes),
-                        None => service.dispatch(request),
+                        })
+                    } else {
+                        update::install(&context, |path| {
+                            // Wait for existing Service writes to finish. Keep
+                            // the mutex through launch, then replace the state
+                            // with a shutdown barrier before releasing it, so
+                            // no new write can start during the exit delay.
+                            let mut state =
+                                service.lock().map_err(|_| "安装服务暂不可用".to_string())?;
+                            state.as_ref().map_err(|error| error.clone())?;
+                            update::launch_and_exit(path)?;
+                            *state =
+                                Err("更新安装程序已启动，应用正在关闭，请稍后重新打开。".into());
+                            Ok(())
+                        })
                     }
-                });
+                })
+            } else {
+                service
+                    .lock()
+                    .map_err(|_| "安装服务暂不可用".to_string())
+                    .and_then(|mut state| {
+                        let service = state.as_mut().map_err(|error| error.clone())?;
+                        match prefetched {
+                            Some(Prefetched::Catalog(path, fetched)) => {
+                                let automatic = matches!(
+                                    request.action.as_str(),
+                                    "catalog-read" | "mcp-catalog-read" | "integrations-read"
+                                );
+                                service.apply_catalog_read(path, fetched, automatic)?;
+                                if path == "/api/catalog" {
+                                    Ok(service.status())
+                                } else {
+                                    service.dispatch(request)
+                                }
+                            }
+                            Some(Prefetched::Update(bytes)) => service.apply_update_check(bytes),
+                            None => service.dispatch(request),
+                        }
+                    })
+            };
             if let Ok(value) = &result {
                 for field in ["apiKey", "authToken"] {
                     if let Some(key) = value.get(field).and_then(|v| v.as_str()) {

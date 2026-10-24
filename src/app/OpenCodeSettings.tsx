@@ -11,7 +11,14 @@ import {
 } from 'lucide-react';
 import { nativeAvailable, nativeCall } from '../lib/api/native';
 import type { OpenCodeConfiguration } from '../lib/api/native';
-import { RestartPrompt } from '../components/Primitives';
+import {
+  changeModelEffort,
+  contextWindowText,
+  modelEffort,
+  selectedEffortChanges,
+  selectedContextChanges,
+} from '../lib/model-settings';
+import { ContextWindowSettings } from './ContextWindowSettings';
 import {
   CYAPI_DEFAULT_URL,
   cachedCyapiRoutes,
@@ -23,7 +30,7 @@ import type { CyapiRoutesView } from '../lib/api/cyapi';
 import { CyapiRoutes } from './CyapiRoutes';
 import { CyapiBalance } from './CyapiBalance';
 import { ModelPicker } from './ModelPicker';
-import { ReasoningEffortPicker } from './ReasoningEffortPicker';
+import { ModelReasoningSettings } from './ModelReasoningSettings';
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const preview: OpenCodeConfiguration = {
@@ -48,10 +55,10 @@ export function OpenCodeSettings() {
   const [showKey, setShowKey] = useState(false);
   const [model, setModel] = useState('');
   const [models, setModels] = useState<string[]>([]);
-  const [effort, setEffort] = useState('');
+  const [effortChanges, setEffortChanges] = useState<Record<string, string>>({});
+  const [contextChanges, setContextChanges] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState<{ text: string; error?: boolean }>();
-  const [restartPrompt, setRestartPrompt] = useState(false);
   const [mode, setMode] = useState<'cyapi' | 'custom'>('cyapi');
   const [routes, setRoutes] = useState<CyapiRoutesView>(
     () => cachedCyapiRoutes() ?? defaultCyapiRoutes,
@@ -71,7 +78,8 @@ export function OpenCodeSettings() {
     );
     setModel(next.model);
     setModels(next.models ?? []);
-    setEffort(next.reasoningEffort ?? '');
+    setEffortChanges({});
+    setContextChanges({});
     setApiKey(savedKey ?? '');
     setShowKey(false);
   }
@@ -153,15 +161,15 @@ export function OpenCodeSettings() {
             apiKey,
             model,
             models,
-            reasoningEffort: effort,
+            modelEffortChanges: selectedEffortChanges(effortChanges, models, model),
+            modelContextChanges: selectedContextChanges(contextChanges, models, model),
             revision: view.revision,
           },
         }),
       );
       setNotice({
-        text: '已写入 OpenCode 配置。请完全关闭 OpenCode（包括后台进程）后重新启动，配置才会生效。',
+        text: '已写入 OpenCode 配置。OpenCode V2 会自动重载；当前会话的模型或 variant 选择仍优先生效，可在 /models 中切换。',
       });
-      setRestartPrompt(true);
     } catch (error) {
       setNotice({ text: errorText(error), error: true });
     } finally {
@@ -179,8 +187,9 @@ export function OpenCodeSettings() {
           configurationRevision: view.revision,
         }),
       );
-      setNotice({ text: '已恢复上次保存前的 OpenCode 配置。请完全关闭 OpenCode 后重新启动。' });
-      setRestartPrompt(true);
+      setNotice({
+        text: '已恢复上次保存前的 OpenCode 配置。OpenCode V2 会自动重载，也可使用 /reload。',
+      });
     } catch (error) {
       setNotice({ text: errorText(error), error: true });
     } finally {
@@ -315,13 +324,73 @@ export function OpenCodeSettings() {
             api="openai"
             disabled={busy || !view}
             required
-            placeholder="填写服务商提供的模型 ID，如 gpt-5.1-codex"
+            placeholder="填写服务商提供的完整模型 ID"
+            renderModelSettings={(id, index) => {
+              const original = modelEffort(id, view?.modelEfforts ?? {});
+              const conflict = view?.modelEffortConflicts?.includes(id) ?? false;
+              const contextOriginal = Object.hasOwn(view?.modelContexts ?? {}, id)
+                ? view?.modelContexts?.[id]
+                : null;
+              const contextConflict = view?.modelContextConflicts?.includes(id) ?? false;
+              return (
+                <div>
+                  <ModelReasoningSettings
+                    id={`opencode-effort-${index}`}
+                    model={id}
+                    original={original}
+                    value={Object.hasOwn(effortChanges, id) ? effortChanges[id] : original}
+                    conflict={conflict}
+                    changed={Object.hasOwn(effortChanges, id)}
+                    onChange={(value) =>
+                      setEffortChanges((changes) =>
+                        changeModelEffort(changes, id, value, original, conflict),
+                      )
+                    }
+                    onReset={() =>
+                      setEffortChanges((changes) => {
+                        const next = { ...changes };
+                        delete next[id];
+                        return next;
+                      })
+                    }
+                    api="openai"
+                    disabled={busy || !view}
+                  />
+                  <ContextWindowSettings
+                    id={`opencode-context-${index}`}
+                    scope={`${id} 的`}
+                    original={contextOriginal}
+                    draft={Object.hasOwn(contextChanges, id) ? contextChanges[id] : undefined}
+                    conflict={contextConflict}
+                    onChange={(value) =>
+                      setContextChanges((changes) =>
+                        changeModelEffort(
+                          changes,
+                          id,
+                          value,
+                          contextWindowText(contextOriginal),
+                          contextConflict,
+                        ),
+                      )
+                    }
+                    onReset={() =>
+                      setContextChanges((changes) => {
+                        const next = { ...changes };
+                        delete next[id];
+                        return next;
+                      })
+                    }
+                    disabled={busy || !view}
+                  />
+                </div>
+              );
+            }}
           />
-          <ReasoningEffortPicker id="opencode-effort" value={effort} onChange={setEffort} />
         </fieldset>
         <p className="n-config-note">
           OpenCode 使用 OpenAI 兼容接口，API 地址通常以 /v1 结尾。保存时保留 JSONC
-          注释和其他配置，API Key 仅保存在本机。保存后需完全关闭 OpenCode 再重新启动。
+          注释和其他配置，API Key 仅保存在本机。仅修改明确编辑的模型等级和上下文窗口；OpenCode V2
+          自动重载配置，必要时使用 /reload。
         </p>
         <div className="n-codex-actions">
           {view?.canRestore && (
@@ -359,9 +428,6 @@ export function OpenCodeSettings() {
             )}
           </p>
         </details>
-      )}
-      {restartPrompt && (
-        <RestartPrompt target="OpenCode（包括后台进程）" onClose={() => setRestartPrompt(false)} />
       )}
     </section>
   );

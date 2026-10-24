@@ -13,6 +13,18 @@ use toml_edit::{value, DocumentMut, Item, Table};
 
 type Result<T> = std::result::Result<T, String>;
 const PROVIDER: &str = "cyapi-toolbox";
+// Codex's global model_context_window is int64; bound new values to positive
+// JavaScript-safe integers so the editor can round-trip them without precision loss.
+const MAX_CONTEXT_WINDOW: u64 = 9_007_199_254_740_991;
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContextWindowChange {
+    // Require an explicit value: null clears, while a missing change object keeps
+    // even opaque legacy TOML values untouched. An empty object is not a clear.
+    #[serde(deserialize_with = "Deserialize::deserialize")]
+    pub value: Option<u64>,
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -23,6 +35,8 @@ pub struct Input {
     #[serde(default)]
     pub models: Option<Vec<String>>,
     pub reasoning_effort: String,
+    #[serde(default)]
+    pub context_window_change: Option<ContextWindowChange>,
     pub revision: String,
     #[serde(default)]
     pub save_revision: Option<String>,
@@ -193,6 +207,7 @@ fn save_revision(root: &Path, doc: &DocumentMut, auth: &Value) -> String {
         "model_provider",
         "model",
         "model_reasoning_effort",
+        "model_context_window",
         "model_catalog_json",
         "cli_auth_credentials_store",
         "forced_login_method",
@@ -290,6 +305,7 @@ fn snapshot_view(root: &Path, data: &Path, snapshot: &Snapshot) -> Result<Value>
         "provider":provider,
         "baseUrl":base_url, "model":setting(&doc, "model").unwrap_or(""),
         "reasoningEffort":setting(&doc, "model_reasoning_effort").unwrap_or(""),
+        "contextWindow":semantic_item(doc.get("model_context_window")),
         "models":crate::codex_models::selected(root, &doc)?,
         "apiKeyConfigured":key_in_auth(&auth).is_some(), "authMode":auth_mode,
         "canRestore":can_restore
@@ -297,8 +313,16 @@ fn snapshot_view(root: &Path, data: &Path, snapshot: &Snapshot) -> Result<Value>
 }
 
 fn validate(input: &Input) -> Result<()> {
+    if let Some(tokens) = input
+        .context_window_change
+        .as_ref()
+        .and_then(|change| change.value)
+    {
+        if !(1..=MAX_CONTEXT_WINDOW).contains(&tokens) {
+            return Err("上下文窗口必须是 1 到 9007199254740991 之间的整数".into());
+        }
+    }
     crate::model_selection::models(&input.model, input.models.as_deref().unwrap_or_default())?;
-    crate::model_selection::effort(&input.reasoning_effort, crate::model_selection::EFFORTS)?;
     let url = reqwest::Url::parse(input.base_url.trim()).map_err(|_| "API 地址无效")?;
     if !["http", "https"].contains(&url.scheme())
         || url.host_str().is_none()
@@ -317,9 +341,6 @@ fn validate(input: &Input) -> Result<()> {
     {
         return Err("请填写有效的模型 ID".into());
     }
-    if input.reasoning_effort.len() > 64 || input.reasoning_effort.chars().any(char::is_control) {
-        return Err("不支持的推理强度".into());
-    }
     if input.api_key.len() > 8192
         || input
             .api_key
@@ -328,6 +349,20 @@ fn validate(input: &Input) -> Result<()> {
             .any(|c| c.is_whitespace() || c.is_control())
     {
         return Err("API Key 格式无效".into());
+    }
+    Ok(())
+}
+fn validate_reasoning_effort(effort: &str, doc: &DocumentMut) -> Result<()> {
+    // An unrelated edit must not reject or normalize an existing opaque value.
+    if setting(doc, "model_reasoning_effort") == Some(effort) {
+        return Ok(());
+    }
+    // Empty clears the global override. Current Codex ReasoningEffort also accepts
+    // model-defined non-empty strings, so a closed enum rejects future advertised
+    // values (e.g. persistent). Bound new custom values without claiming support
+    // for them in any model's catalog metadata.
+    if effort.len() > 64 || effort.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("不支持的推理强度".into());
     }
     Ok(())
 }
@@ -361,6 +396,14 @@ fn put_config(doc: &mut DocumentMut, input: &Input) -> Result<()> {
     let target = doc.as_table_mut();
     set(target, "model_provider", value(PROVIDER));
     set(target, "model", value(input.model.trim()));
+    if let Some(change) = &input.context_window_change {
+        match change.value {
+            Some(tokens) => set(target, "model_context_window", value(tokens as i64)),
+            None => {
+                target.remove("model_context_window");
+            }
+        }
+    }
     if input.reasoning_effort.is_empty() {
         target.remove("model_reasoning_effort");
     } else {
@@ -495,6 +538,7 @@ pub fn save(root: &Path, data: &Path, input: &Input) -> Result<Value> {
                 .into(),
         );
     }
+    validate_reasoning_effort(&input.reasoning_effort, &doc)?;
     let key = if input.api_key.trim().is_empty() {
         key_in_auth(&auth).ok_or("请填写 API Key")?
     } else {
@@ -504,8 +548,7 @@ pub fn save(root: &Path, data: &Path, input: &Input) -> Result<Value> {
     if let Some(models) = &input.models {
         let selected = crate::model_selection::models(&input.model, models)?;
         if selected.len() > 1 || !crate::codex_models::selected(root, &doc)?.is_empty() {
-            let path =
-                crate::codex_models::write(root, data, &doc, &selected, &input.reasoning_effort)?;
+            let path = crate::codex_models::write(root, data, &doc, &selected)?;
             set(
                 doc.as_table_mut(),
                 "model_catalog_json",
@@ -586,6 +629,7 @@ mod tests {
             models: None,
             model: "example-model".into(),
             reasoning_effort: "high".into(),
+            context_window_change: None,
             revision: view["revision"].as_str().unwrap().into(),
             save_revision: view["saveRevision"].as_str().map(str::to_owned),
         }
@@ -960,7 +1004,17 @@ mod tests {
             "Keep Codex agent instructions"
         );
         assert_eq!(catalog["models"][0]["default_reasoning_level"], "low");
-        assert_eq!(catalog["models"][1]["default_reasoning_level"], "medium");
+        assert!(catalog["models"][1]
+            .get("default_reasoning_level")
+            .is_none());
+        assert_eq!(
+            catalog["models"][0]["supported_reasoning_levels"],
+            json!([{"effort":"low","description":"low"}])
+        );
+        assert_eq!(
+            catalog["models"][1]["supported_reasoning_levels"],
+            json!([])
+        );
         let mut next = input(&saved);
         next.model = "custom/model".into();
         next.models = Some(vec!["custom/model".into()]);
@@ -980,6 +1034,310 @@ mod tests {
             first_catalog.to_str()
         );
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn clearing_global_effort_keeps_model_metadata_unchanged() {
+        let (base, root, data) = fixture();
+        let metadata = json!({"models":[{
+            "slug":"known-model", "base_instructions":"Codex instructions",
+            "default_reasoning_level":"low",
+            "supported_reasoning_levels":[{"effort":"low","description":"Low"}]
+        }]});
+        fs::write(
+            root.join("models_cache.json"),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+        let mut change = input(&view(&root, &data).unwrap());
+        change.model = "known-model".into();
+        change.models = Some(vec!["known-model".into(), "unknown-model".into()]);
+        let saved = save(&root, &data, &change).unwrap();
+        let doc = parse_config(&Snapshot::read(&root).unwrap().config).unwrap();
+        let path = PathBuf::from(setting(&doc, "model_catalog_json").unwrap());
+        let bytes = fs::read(&path).unwrap();
+        let published: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            published["models"][0]["supported_reasoning_levels"],
+            metadata["models"][0]["supported_reasoning_levels"]
+        );
+        assert_eq!(published["models"][0]["default_reasoning_level"], "low");
+        assert_eq!(
+            published["models"][1]["supported_reasoning_levels"],
+            json!([])
+        );
+        assert!(published["models"][1]
+            .get("default_reasoning_level")
+            .is_none());
+
+        let mut clear = change;
+        clear.revision = saved["revision"].as_str().unwrap().into();
+        clear.save_revision = saved["saveRevision"].as_str().map(str::to_owned);
+        clear.reasoning_effort.clear();
+        let cleared = save(&root, &data, &clear).unwrap();
+        assert_eq!(cleared["reasoningEffort"], "");
+        let doc = parse_config(&Snapshot::read(&root).unwrap().config).unwrap();
+        assert!(doc.get("model_reasoning_effort").is_none());
+        assert_eq!(setting(&doc, "model_catalog_json"), path.to_str());
+        assert_eq!(fs::read(path).unwrap(), bytes);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn unchanged_unknown_legacy_effort_survives_unrelated_configuration_saves() {
+        // Even an older opaque value outside today's new-input limits is retained
+        // exactly when the user only changes the endpoint or other settings.
+        for legacy in ["future-effort", "legacy effort", &"x".repeat(65)] {
+            let (base, root, data) = fixture();
+            let mut doc = DocumentMut::new();
+            doc["model"] = value("example-model");
+            doc["model_reasoning_effort"] = value(legacy);
+            fs::write(root.join("config.toml"), doc.to_string()).unwrap();
+            let before = view(&root, &data).unwrap();
+            let mut change = input(&before);
+            change.reasoning_effort = before["reasoningEffort"].as_str().unwrap().into();
+            let saved = save(&root, &data, &change).unwrap();
+            assert_eq!(saved["reasoningEffort"], legacy);
+            let doc = parse_config(&Snapshot::read(&root).unwrap().config).unwrap();
+            assert_eq!(setting(&doc, "model_reasoning_effort"), Some(legacy));
+            fs::remove_dir_all(base).unwrap();
+        }
+    }
+
+    #[test]
+    fn new_custom_efforts_are_bounded_without_a_closed_enum() {
+        let (base, root, data) = fixture();
+        let before = view(&root, &data).unwrap();
+        for invalid in [" ", "custom effort", "high\n", "\u{7f}", &"x".repeat(65)] {
+            let mut change = input(&before);
+            change.reasoning_effort = invalid.into();
+            assert!(save(&root, &data, &change).is_err());
+            assert!(!root.join("config.toml").exists());
+            assert!(!root.join("auth.json").exists());
+            assert!(!backup_path(&data).exists());
+        }
+        let mut current = before;
+        for effort in ["provider-special", "persistent", "high", ""] {
+            let mut change = input(&current);
+            change.reasoning_effort = effort.into();
+            current = save(&root, &data, &change).unwrap();
+            assert_eq!(current["reasoningEffort"], effort);
+        }
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn context_window_change_contract_distinguishes_keep_set_and_clear() {
+        let request = json!({
+            "baseUrl":"https://example.invalid/v1", "apiKey":"dummy-key",
+            "model":"example-model", "reasoningEffort":"high", "revision":"revision"
+        });
+        let keep: Input = serde_json::from_value(request.clone()).unwrap();
+        assert!(keep.context_window_change.is_none());
+        for (change, expected) in [
+            (json!({"value":null}), None),
+            (json!({"value":123456}), Some(123456)),
+        ] {
+            let mut request = request.clone();
+            request["contextWindowChange"] = change;
+            let decoded: Input = serde_json::from_value(request).unwrap();
+            assert_eq!(decoded.context_window_change.unwrap().value, expected);
+        }
+        for invalid in [
+            json!({}),
+            json!({"value":-1}),
+            json!({"value":1.5}),
+            json!({"value":"123"}),
+            json!({"value":true}),
+            json!({"value":null,"extra":true}),
+        ] {
+            let mut request = request.clone();
+            request["contextWindowChange"] = invalid;
+            assert!(serde_json::from_value::<Input>(request).is_err());
+        }
+    }
+
+    #[test]
+    fn unrelated_saves_preserve_absent_numeric_and_opaque_context_windows() {
+        for legacy in [
+            "",
+            "model_context_window = 128000 # keep context\n",
+            "model_context_window = 'legacy-auto' # keep context\n",
+            "model_context_window = -1\n",
+            "model_context_window = 9007199254740992\n",
+            "model_context_window = 1.5\n",
+            "model_context_window = { legacy = true }\n",
+        ] {
+            let (base, root, data) = fixture();
+            let config = format!("model = 'example-model'\nmodel_reasoning_effort = 'high'\nmodel_auto_compact_token_limit = 64000\n{legacy}");
+            fs::write(root.join("config.toml"), &config).unwrap();
+            let before = view(&root, &data).unwrap();
+            let mut change = input(&before);
+            let saved = save(&root, &data, &change).unwrap();
+            assert_eq!(saved["contextWindow"], before["contextWindow"]);
+            // Change only the default model on the next save; no context patch.
+            change = input(&saved);
+            change.model = "another-model".into();
+            let switched = save(&root, &data, &change).unwrap();
+            assert_eq!(switched["contextWindow"], before["contextWindow"]);
+            let snapshot = Snapshot::read(&root).unwrap();
+            let text = std::str::from_utf8(snapshot.config.as_ref().unwrap()).unwrap();
+            assert!(text.contains(legacy));
+            let doc = parse_config(&snapshot.config).unwrap();
+            assert_eq!(
+                doc["model_auto_compact_token_limit"].as_integer(),
+                Some(64000)
+            );
+            if legacy.is_empty() {
+                assert!(doc.get("model_context_window").is_none());
+                assert!(before["contextWindow"].is_null());
+            }
+            fs::remove_dir_all(base).unwrap();
+        }
+    }
+
+    #[test]
+    fn setting_and_clearing_global_context_preserves_catalog_and_restores_exactly() {
+        let (base, root, data) = fixture();
+        let metadata = json!({"models":[{
+            "slug":"known-model", "base_instructions":"Codex instructions",
+            "context_window":128000, "max_output_tokens":16000,
+            "truncation_policy":{"mode":"tokens","limit":10000},
+            "default_reasoning_level":"low",
+            "supported_reasoning_levels":[{"effort":"low","description":"Low"}]
+        }]});
+        fs::write(
+            root.join("models_cache.json"),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+        let config = b"# original\nmodel = 'known-model'\nmodel_reasoning_effort = 'high'\nmodel_context_window = 128000 # original context\nmodel_auto_compact_token_limit = 100000\n";
+        fs::write(root.join("config.toml"), config).unwrap();
+        let mut change = input(&view(&root, &data).unwrap());
+        change.model = "known-model".into();
+        change.models = Some(vec!["known-model".into(), "unknown-model".into()]);
+        let published = save(&root, &data, &change).unwrap();
+        let original = Snapshot::read(&root).unwrap();
+        let doc = parse_config(&original.config).unwrap();
+        let path = PathBuf::from(setting(&doc, "model_catalog_json").unwrap());
+        let catalog_bytes = fs::read(&path).unwrap();
+        let catalog: Value = serde_json::from_slice(&catalog_bytes).unwrap();
+        for field in [
+            "context_window",
+            "max_output_tokens",
+            "truncation_policy",
+            "default_reasoning_level",
+            "supported_reasoning_levels",
+        ] {
+            assert_eq!(catalog["models"][0][field], metadata["models"][0][field]);
+        }
+        assert!(catalog["models"][1].get("context_window").is_none());
+        assert!(catalog["models"][1].get("max_output_tokens").is_none());
+
+        let mut current = published;
+        for tokens in [1, 256000, MAX_CONTEXT_WINDOW] {
+            let mut change = input(&current);
+            change.model = "known-model".into();
+            change.models = Some(vec!["known-model".into(), "unknown-model".into()]);
+            change.context_window_change = Some(ContextWindowChange {
+                value: Some(tokens),
+            });
+            let saved = save(&root, &data, &change).unwrap();
+            assert_eq!(saved["contextWindow"], json!(tokens));
+            let doc = parse_config(&Snapshot::read(&root).unwrap().config).unwrap();
+            assert_eq!(
+                doc["model_auto_compact_token_limit"].as_integer(),
+                Some(100000)
+            );
+            assert_eq!(doc["model_reasoning_effort"].as_str(), Some("high"));
+            assert_eq!(setting(&doc, "model_catalog_json"), path.to_str());
+            assert_eq!(fs::read(&path).unwrap(), catalog_bytes);
+            assert!(fs::read_to_string(root.join("config.toml"))
+                .unwrap()
+                .contains("# original context"));
+            current = restore(&root, &data, saved["revision"].as_str().unwrap()).unwrap();
+            assert_eq!(Snapshot::read(&root).unwrap().config, original.config);
+            assert_eq!(Snapshot::read(&root).unwrap().auth, original.auth);
+            assert_eq!(current["contextWindow"], 128000);
+        }
+        let mut clear = input(&current);
+        clear.model = "known-model".into();
+        clear.models = Some(vec!["known-model".into(), "unknown-model".into()]);
+        clear.context_window_change = Some(ContextWindowChange { value: None });
+        let cleared = save(&root, &data, &clear).unwrap();
+        assert!(cleared["contextWindow"].is_null());
+        let doc = parse_config(&Snapshot::read(&root).unwrap().config).unwrap();
+        assert!(doc.get("model_context_window").is_none());
+        assert_eq!(
+            doc["model_auto_compact_token_limit"].as_integer(),
+            Some(100000)
+        );
+        assert_eq!(doc["model_reasoning_effort"].as_str(), Some("high"));
+        assert_eq!(setting(&doc, "model_catalog_json"), path.to_str());
+        assert_eq!(fs::read(&path).unwrap(), catalog_bytes);
+        restore(&root, &data, cleared["revision"].as_str().unwrap()).unwrap();
+        assert_eq!(Snapshot::read(&root).unwrap().config, original.config);
+        assert_eq!(Snapshot::read(&root).unwrap().auth, original.auth);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn invalid_context_windows_never_write_config_credentials_backup_or_catalog() {
+        let (base, root, data) = fixture();
+        fs::write(
+            root.join("config.toml"),
+            "model_context_window = 'legacy-auto'\n",
+        )
+        .unwrap();
+        let before = view(&root, &data).unwrap();
+        let original = Snapshot::read(&root).unwrap();
+        for tokens in [0, MAX_CONTEXT_WINDOW + 1, i64::MAX as u64, u64::MAX] {
+            let mut change = input(&before);
+            change.models = Some(vec!["known-model".into(), "unknown-model".into()]);
+            change.context_window_change = Some(ContextWindowChange {
+                value: Some(tokens),
+            });
+            assert!(save(&root, &data, &change)
+                .unwrap_err()
+                .contains("上下文窗口"));
+            assert_eq!(Snapshot::read(&root).unwrap().config, original.config);
+            assert_eq!(Snapshot::read(&root).unwrap().auth, original.auth);
+            assert!(!backup_path(&data).exists());
+            assert!(!root.join("cyapi-models").exists());
+            assert!(!data.exists());
+        }
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn concurrent_context_changes_block_both_unpatched_and_patched_stale_forms() {
+        for updated in [
+            "model_context_window = 256000\n",
+            "",
+            "model_context_window = 'legacy-auto'\n",
+        ] {
+            for patch in [
+                None,
+                Some(ContextWindowChange { value: None }),
+                Some(ContextWindowChange {
+                    value: Some(512000),
+                }),
+            ] {
+                let (base, root, data) = fixture();
+                fs::write(root.join("config.toml"), "model_context_window = 128000\n").unwrap();
+                let mut pending = input(&view(&root, &data).unwrap());
+                pending.context_window_change = patch;
+                fs::write(root.join("config.toml"), updated).unwrap();
+                let latest = Snapshot::read(&root).unwrap();
+                assert!(save(&root, &data, &pending)
+                    .unwrap_err()
+                    .contains("已被其他程序修改"));
+                assert_eq!(Snapshot::read(&root).unwrap().config, latest.config);
+                assert_eq!(Snapshot::read(&root).unwrap().auth, latest.auth);
+                assert!(!backup_path(&data).exists());
+                fs::remove_dir_all(base).unwrap();
+            }
+        }
     }
 
     #[test]

@@ -110,13 +110,7 @@ fn bundled(data: &Path) -> Option<Value> {
     result
 }
 
-pub fn write(
-    root: &Path,
-    data: &Path,
-    doc: &DocumentMut,
-    ids: &[String],
-    effort: &str,
-) -> Result<PathBuf> {
+pub fn write(root: &Path, data: &Path, doc: &DocumentMut, ids: &[String]) -> Result<PathBuf> {
     let mut sources = Vec::new();
     if let Some(source) = configured_path(root, doc).and_then(|path| catalog(&path).ok()) {
         sources.push(source);
@@ -162,17 +156,13 @@ pub fn write(
         entry["visibility"] = json!("list");
         entry["supported_in_api"] = json!(true);
         entry["priority"] = json!(priority);
-        // Unknown gateway IDs don't publish effort metadata. Known models keep
-        // their supported levels; the explicitly configured level is also usable.
+        // Capabilities belong to the model, not the global model_reasoning_effort.
+        // Codex ModelInfo requires a supported-levels list (which may be empty),
+        // but default_reasoning_level is optional. Preserve advertised metadata;
+        // for unknown IDs, advertise no levels and invent no default.
         if entry.get("supported_reasoning_levels").and_then(Value::as_array).is_none() {
-            entry["supported_reasoning_levels"] = json!(crate::model_selection::EFFORTS.iter().filter(|level| !level.is_empty())
-                .map(|level| json!({"effort":level,"description":level})).collect::<Vec<_>>());
+            entry["supported_reasoning_levels"] = json!([]);
         }
-        if !effort.is_empty() {
-            let levels = entry["supported_reasoning_levels"].as_array_mut().unwrap();
-            if !levels.iter().any(|level| level["effort"] == effort) { levels.push(json!({"effort":effort,"description":effort})); }
-        }
-        if entry.get("default_reasoning_level").is_none() { entry["default_reasoning_level"] = json!("medium"); }
         entry
     }).collect();
     let bytes = serde_json::to_vec_pretty(&json!({"models":entries}))
@@ -199,6 +189,82 @@ mod tests {
     use super::*;
 
     #[test]
+    fn global_effort_never_changes_advertised_levels_or_defaults() {
+        let root =
+            std::env::temp_dir().join(format!("cyapi-codex-levels-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let data = root.join("data");
+        let known = json!({
+            "slug":"known", "base_instructions":"Codex instructions",
+            "default_reasoning_level":"low",
+            "supported_reasoning_levels":[{"effort":"low","description":"Low effort"}]
+        });
+        fs::write(
+            root.join("models_cache.json"),
+            serde_json::to_vec(&json!({"models":[known]})).unwrap(),
+        )
+        .unwrap();
+        let ids = vec!["known".into(), "unknown".into()];
+        let mut doc = DocumentMut::new();
+        doc["model_reasoning_effort"] = toml_edit::value("high");
+        let path = write(&root, &data, &doc, &ids).unwrap();
+        let published = catalog(&path).unwrap();
+        assert_eq!(
+            published["models"][0]["supported_reasoning_levels"],
+            known["supported_reasoning_levels"]
+        );
+        assert_eq!(published["models"][0]["default_reasoning_level"], "low");
+        assert_eq!(
+            published["models"][1]["supported_reasoning_levels"],
+            json!([])
+        );
+        assert!(published["models"][1]
+            .get("default_reasoning_level")
+            .is_none());
+
+        // Re-read our published catalog when clearing the global setting: metadata
+        // and the immutable catalog hash must stay identical.
+        doc["model_catalog_json"] = toml_edit::value(path.to_string_lossy().as_ref());
+        doc.remove("model_reasoning_effort");
+        let cleared = write(&root, &data, &doc, &ids).unwrap();
+        assert_eq!(cleared, path);
+        assert_eq!(catalog(&cleared).unwrap(), published);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn known_models_preserve_custom_levels_and_an_absent_default() {
+        let root =
+            std::env::temp_dir().join(format!("cyapi-codex-custom-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let known = json!({
+            "slug":"known", "base_instructions":"Codex instructions",
+            "supported_reasoning_levels":[{"effort":"provider-special","description":"Custom effort"}]
+        });
+        fs::write(
+            root.join("models_cache.json"),
+            serde_json::to_vec(&json!({"models":[known]})).unwrap(),
+        )
+        .unwrap();
+        let path = write(
+            &root,
+            &root.join("data"),
+            &DocumentMut::new(),
+            &["known".into()],
+        )
+        .unwrap();
+        let published = catalog(&path).unwrap();
+        assert_eq!(
+            published["models"][0]["supported_reasoning_levels"],
+            known["supported_reasoning_levels"]
+        );
+        assert!(published["models"][0]
+            .get("default_reasoning_level")
+            .is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     #[ignore = "manual offline validation against the installed Codex CLI"]
     fn installed_codex_reads_the_generated_multi_model_catalog() {
         let root =
@@ -206,7 +272,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let data = root.join("toolbox-data");
         let ids = vec!["cyapi-test-a".to_string(), "cyapi-test-b".to_string()];
-        let path = write(&root, &data, &DocumentMut::new(), &ids, "high").unwrap();
+        let path = write(&root, &data, &DocumentMut::new(), &ids).unwrap();
         let mut doc = DocumentMut::new();
         doc["model_catalog_json"] = toml_edit::value(path.to_string_lossy().as_ref());
         doc["model"] = toml_edit::value(&ids[0]);
@@ -234,6 +300,9 @@ mod tests {
         assert!(output["models"][0]["base_instructions"]
             .as_str()
             .is_some_and(|text| !text.is_empty()));
+        for model in output["models"].as_array().unwrap() {
+            assert_eq!(model["supported_reasoning_levels"], json!([]));
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }

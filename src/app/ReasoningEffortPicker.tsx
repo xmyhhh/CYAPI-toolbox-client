@@ -1,7 +1,6 @@
-const openaiEfforts = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-const claudeEfforts = ['', 'low', 'medium', 'high', 'xhigh'];
+const efforts = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const labels: Record<string, string> = {
-  '': '默认（由模型决定）',
+  '': '不覆盖（移除全局显式等级）',
   none: '不思考 · none',
   minimal: '最少 · minimal',
   low: '低 · low',
@@ -16,17 +15,14 @@ export function ReasoningEffortPicker({
   id,
   value,
   onChange,
-  api = 'openai',
 }: {
   id: string;
   value: string;
   onChange: (value: string) => void;
-  api?: 'openai' | 'anthropic';
 }) {
-  const efforts = api === 'anthropic' ? claudeEfforts : openaiEfforts;
   return (
     <div className="n-config-field">
-      <label htmlFor={id}>思考等级</label>
+      <label htmlFor={id}>全局推理等级（Codex）</label>
       <select id={id} value={value} onChange={(event) => onChange(event.target.value)}>
         {!efforts.includes(value) && <option value={value}>{value}（当前配置）</option>}
         {efforts.map((effort) => (
@@ -35,7 +31,10 @@ export function ReasoningEffortPicker({
           </option>
         ))}
       </select>
-      <p className="n-config-note">对所选模型生效；支持的等级取决于模型和服务商。</p>
+      <p className="n-config-note">
+        写入 Codex 的全局
+        model_reasoning_effort，不是逐模型默认值。候选值不代表每个模型都支持；不会修改模型目录中的能力声明。未知时请不覆盖。
+      </p>
     </div>
   );
 }

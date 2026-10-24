@@ -1,4 +1,6 @@
+import { listen } from '@tauri-apps/api/event';
 import { nativeCall, nativeAvailable, SERVER_URL } from './native';
+import type { UpdateProgress } from '../update-progress';
 import { APP_VERSION, DOWNLOAD_PAGE } from '../app-info';
 
 export interface UpdateFile {
@@ -100,8 +102,22 @@ export async function checkUpdate(): Promise<UpdateStatus> {
   };
 }
 
-export async function downloadUpdate(): Promise<UpdateDownload> {
-  return nativeCall<UpdateDownload>('update-download');
+export async function downloadUpdate(
+  onProgress?: (progress: UpdateProgress) => void,
+): Promise<UpdateDownload> {
+  const operationId = crypto.randomUUID();
+  // Register before invoke so even the first manifest/connection event is seen.
+  // Progress is optional: an event-channel failure must not prevent updating.
+  const unlisten = onProgress
+    ? await listen<UpdateProgress>('toolbox-update-progress', ({ payload }) => {
+        if (payload.operationId === operationId) onProgress(payload);
+      }).catch(() => undefined)
+    : undefined;
+  try {
+    return await nativeCall<UpdateDownload>('update-download', { operationId });
+  } finally {
+    unlisten?.();
+  }
 }
 
 export async function installUpdate(): Promise<{ started: boolean }> {

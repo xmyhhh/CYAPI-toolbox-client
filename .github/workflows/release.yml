@@ -144,6 +144,13 @@ jobs:
           path: assets
           merge-multiple: true
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Require all platform installers
+        run: node scripts/release-assets.mjs assets "$(node -p "require('./package.json').version")"
+
       - name: Write the checksums
         run: |
           set -euo pipefail
@@ -172,12 +179,15 @@ jobs:
     needs: release
     # The env context is not available in a job-level if, so the ci-* gate
     # reads the tag name directly: only v* tags deploy the website.
-    if: needs.release.result == 'success' && startsWith(github.ref_name, 'v')
+    if: >-
+      needs.release.result == 'success' &&
+      ((github.event_name == 'push' && startsWith(github.ref_name, 'v')) ||
+       (github.event_name == 'workflow_dispatch' && !inputs.dry-run && startsWith(inputs.tag, 'v')))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      # Without the secrets the job stays dormant; the manual website flow
-      # (fetch-release.mjs + deploy.sh) is the fallback.
+      # A real release must not report a successful website publish when its
+      # deployment credentials are missing. The manual flow remains a fallback.
       - id: secrets
         name: Check the deployment secrets
         env:
@@ -189,9 +199,8 @@ jobs:
           set -euo pipefail
           for name in MONOREPO_TOKEN SITE_SSH_HOST SITE_SSH_USER SITE_DEPLOY_KEY; do
             if [ -z "${!name}" ]; then
-              echo "::notice::Secret $name is not configured; skipping the website deploy (manual flow: fetch-release.mjs + deploy.sh)."
-              echo "enabled=false" >> "$GITHUB_OUTPUT"
-              exit 0
+              echo "::error::Secret $name is not configured; website publication cannot proceed (manual flow: fetch-release.mjs + deploy.sh)."
+              exit 1
             fi
           done
           echo "enabled=true" >> "$GITHUB_OUTPUT"
@@ -231,6 +240,7 @@ jobs:
           set -euo pipefail
           mkdir -p CYAPI-toolbox-client/release
           cp assets/CYAPI-Toolbox_* CYAPI-toolbox-client/release/
+          node CYAPI-toolbox-client/scripts/release-assets.mjs CYAPI-toolbox-client/release "$(node -p "require('./CYAPI-toolbox-client/package.json').version")"
           ls -l CYAPI-toolbox-client/release
 
       # The catalog server archive ships from the private repository. When

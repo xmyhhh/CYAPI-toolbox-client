@@ -24,6 +24,8 @@ import { CyapiRoutes } from './CyapiRoutes';
 import { CyapiBalance } from './CyapiBalance';
 import { ModelPicker } from './ModelPicker';
 import { ReasoningEffortPicker } from './ReasoningEffortPicker';
+import { ContextWindowSettings } from './ContextWindowSettings';
+import { contextWindowChange, contextWindowText } from '../lib/model-settings';
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const preview: CodexConfiguration = {
@@ -48,6 +50,7 @@ export function CodexSettings() {
   const [model, setModel] = useState('');
   const [models, setModels] = useState<string[]>([]);
   const [effort, setEffort] = useState('');
+  const [contextDraft, setContextDraft] = useState<string>();
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState<{ text: string; error?: boolean }>();
   const [restartPrompt, setRestartPrompt] = useState(false);
@@ -74,6 +77,7 @@ export function CodexSettings() {
     setModel(next.model);
     setModels(next.models ?? []);
     setEffort(next.reasoningEffort);
+    setContextDraft(undefined);
     setApiKey(savedKey ?? '');
     setShowKey(false);
   }
@@ -147,6 +151,7 @@ export function CodexSettings() {
             model,
             models,
             reasoningEffort: effort,
+            contextWindowChange: contextWindowChange(contextDraft),
             revision: view.revision,
             saveRevision: view.saveRevision,
           },
@@ -319,6 +324,24 @@ export function CodexSettings() {
               placeholder="服务商提供的模型 ID"
             />
             <ReasoningEffortPicker id="codex-effort" value={effort} onChange={setEffort} />
+            <ContextWindowSettings
+              id="codex-context"
+              scope="Codex 全局"
+              original={view?.contextWindow}
+              draft={contextDraft}
+              onChange={(value) =>
+                setContextDraft(
+                  value === contextWindowText(view?.contextWindow) ? undefined : value,
+                )
+              }
+              onReset={() => setContextDraft(undefined)}
+              disabled={busy || !view}
+            >
+              <p className="n-config-note">
+                写入全局 model_context_window，切换模型后仍适用，不是逐模型能力声明。Profile
+                中的同名字段可能覆盖它；不修改自动压缩阈值或模型目录元数据。
+              </p>
+            </ContextWindowSettings>
           </fieldset>
           <p className="n-config-note">
             支持 Responses API。保存前自动备份，API Key 仅保存在本机。保存后需完全关闭 Codex

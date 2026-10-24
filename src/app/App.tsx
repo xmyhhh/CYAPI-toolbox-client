@@ -58,6 +58,7 @@ import {
   updateTargetUrl,
 } from '../lib/api/update';
 import type { UpdateStatus } from '../lib/api/update';
+import { updateProgressText } from '../lib/update-progress';
 import { CollectionCard } from '../features/skills/CollectionCard';
 import { CollectionDialog } from '../features/skills/CollectionDialog';
 import { SkillRow } from '../features/skills/SkillRow';
@@ -467,7 +468,7 @@ export default function App() {
     setUpdateError('');
     setUpdateStep('正在下载更新安装包');
     try {
-      await downloadUpdate();
+      await downloadUpdate((progress) => setUpdateStep(updateProgressText(progress)));
       setUpdateStep('正在校验并启动安装程序');
       await installUpdate();
       setUpdateStep('安装程序已启动，应用将自动关闭');
@@ -597,11 +598,7 @@ export default function App() {
               立即更新
             </button>
           )}
-          <button
-            className="n-button"
-            disabled={!!updateStep || updateChecking}
-            onClick={() => void openUpdatePage()}
-          >
+          <button className="n-button" onClick={() => void openUpdatePage()}>
             <Download size={14} />
             {update.canSelfUpdate ? '从官网下载' : '下载新版本'}
           </button>

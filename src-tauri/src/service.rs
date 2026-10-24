@@ -59,12 +59,13 @@ pub(crate) struct Fetched {
 /// Stops reading a download as soon as the user cancels the task.
 struct CancelReader<R> {
     inner: R,
+    cancellable: bool,
 }
 impl<R: Read> Read for CancelReader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        if crate::cancel::is_cancelled() {
+        if self.cancellable && crate::cancel::is_cancelled() {
             return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
+                std::io::ErrorKind::Other,
                 crate::cancel::MESSAGE,
             ));
         }
@@ -77,6 +78,8 @@ fn fetch_server_once(
     timeout: u64,
     direct_origin: bool,
     etag: Option<&str>,
+    cancellable: bool,
+    progress: &mut dyn FnMut(u64),
 ) -> Result<Fetched> {
     let builder = Client::builder()
         .timeout(Duration::from_secs(timeout))
@@ -118,21 +121,44 @@ fn fetch_server_once(
     if response.content_length().is_some_and(|len| len > limit) {
         return Err("下载文件过大".into());
     }
-    let mut bytes = Vec::new();
-    CancelReader {
-        inner: response.take(limit + 1),
-    }
-    .read_to_end(&mut bytes)
-    .map_err(|error| error.to_string())?;
-    if bytes.len() as u64 > limit {
-        return Err("下载超过大小限制".into());
-    }
+    let bytes = read_download(
+        CancelReader {
+            inner: response.take(limit + 1),
+            cancellable,
+        },
+        limit,
+        progress,
+    )?;
     Ok(Fetched {
         modified: true,
         etag,
         bytes,
     })
 }
+fn read_download(
+    mut reader: impl Read,
+    limit: u64,
+    progress: &mut dyn FnMut(u64),
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0u8; 64 * 1024];
+    progress(0);
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result.map_err(|error| error.to_string())?,
+        };
+        if count == 0 {
+            return Ok(bytes);
+        }
+        if bytes.len() as u64 + count as u64 > limit {
+            return Err("下载超过大小限制".into());
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+        progress(bytes.len() as u64);
+    }
+}
+
 pub(crate) fn fetch_server_url(url: Url, limit: u64, timeout: u64) -> Result<Vec<u8>> {
     fetch_server_url_conditional(url, limit, timeout, None).map(|fetched| fetched.bytes)
 }
@@ -159,16 +185,56 @@ pub(crate) fn fetch_server_url_conditional(
     timeout: u64,
     etag: Option<&str>,
 ) -> Result<Fetched> {
+    fetch_server_with_progress(
+        url,
+        limit,
+        etag,
+        FetchOptions {
+            primary_timeout: timeout,
+            fallback_timeout: timeout,
+            cancellable: true,
+        },
+        &mut |_| {},
+    )
+}
+
+pub(crate) struct FetchOptions {
+    pub primary_timeout: u64,
+    pub fallback_timeout: u64,
+    pub cancellable: bool,
+}
+
+/// Reports bytes as they arrive (and resets to zero when retrying the origin).
+/// The caller must throttle UI/log updates, not the network reader.
+pub(crate) fn fetch_server_with_progress(
+    url: Url,
+    limit: u64,
+    etag: Option<&str>,
+    options: FetchOptions,
+    progress: &mut dyn FnMut(u64),
+) -> Result<Fetched> {
+    let FetchOptions {
+        primary_timeout,
+        fallback_timeout,
+        cancellable,
+    } = options;
     let can_fallback = can_bypass_cloudflare(&url);
-    match fetch_server_once(&url, limit, timeout, false, etag) {
+    progress(0);
+    match fetch_server_once(
+        &url, limit, primary_timeout, false, etag, cancellable, progress,
+    ) {
         Ok(fetched) => Ok(fetched),
-        Err(primary_error) if can_fallback => {
+        Err(primary_error) if can_fallback && !(cancellable && crate::cancel::is_cancelled()) => {
             crate::logging::event(
                 "warn",
                 "download",
                 format!("Cloudflare 线路请求失败，改为直连源站：{primary_error}"),
             );
-            fetch_server_once(&url, limit, timeout, true, etag).map_err(|fallback_error| {
+            progress(0);
+            fetch_server_once(
+                &url, limit, fallback_timeout, true, etag, cancellable, progress,
+            )
+            .map_err(|fallback_error| {
                 format!("主线路失败：{primary_error}；源站直连失败：{fallback_error}")
             })
         }
@@ -2324,8 +2390,10 @@ exit 1
                 let online = crate::update::fetch_manifest(self.server_url());
                 return crate::update::check(self, online);
             }
-            "update-download" => return crate::update::download(self),
-            "update-install" => return crate::update::install(self),
+            // These operations must run through the lock-free update worker.
+            "update-download" | "update-install" => {
+                return Err("更新操作必须通过独立更新任务执行".into())
+            }
             "open-url" => {
                 return crate::update::open(request.url.as_deref().ok_or("缺少要打开的地址")?)
             }
@@ -2358,6 +2426,50 @@ mod tests {
                 "不应回退：{url}"
             );
         }
+    }
+
+    #[test]
+    fn download_reader_reports_bytes_and_enforces_size_limit() {
+        let bytes = vec![7u8; 150_000];
+        let mut progress = Vec::new();
+        let downloaded = read_download(&bytes[..], bytes.len() as u64, &mut |count| {
+            progress.push(count);
+        }).unwrap();
+        assert_eq!(downloaded, bytes);
+        assert_eq!(progress.first(), Some(&0));
+        assert_eq!(progress.last(), Some(&150_000));
+        assert!(progress.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(read_download(&bytes[..], 100, &mut |_| {}).is_err());
+    }
+
+    #[test]
+    fn download_reader_propagates_cancellation_without_retrying_forever() {
+        struct CancelledReader;
+        impl Read for CancelledReader {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(std::io::ErrorKind::Other, crate::cancel::MESSAGE))
+            }
+        }
+        let error = read_download(CancelledReader, 100, &mut |_| {}).unwrap_err();
+        assert_eq!(error, crate::cancel::MESSAGE);
+    }
+
+    #[test]
+    fn download_reader_never_treats_partial_network_failure_as_success() {
+        struct BrokenReader(bool);
+        impl Read for BrokenReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.0 {
+                    return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout"));
+                }
+                self.0 = true;
+                buffer[0] = 42;
+                Ok(1)
+            }
+        }
+        let mut progress = Vec::new();
+        assert!(read_download(BrokenReader(false), 100, &mut |count| progress.push(count)).is_err());
+        assert_eq!(progress, vec![0, 1]);
     }
 
     #[test]
@@ -3784,14 +3896,14 @@ print(json.dumps({'upstreamDraft': str(draft), 'tracks': len(content['tracks'])}
         .unwrap();
         assert_eq!(doc["theme"], "dark");
         assert_eq!(
-            doc["provider"]["cyapi"]["options"]["apiKey"],
+            doc["providers"]["cyapi"]["settings"]["apiKey"],
             "dummy-opencode-key"
         );
         assert_eq!(
-            doc["provider"]["cyapi"]["models"]["default"]["id"],
+            doc["providers"]["cyapi"]["models"]["example/model"]["modelID"],
             "example/model"
         );
-        assert_eq!(doc["model"], "cyapi/default");
+        assert_eq!(doc["model"], "cyapi/example/model");
 
         let restored = service
             .dispatch(

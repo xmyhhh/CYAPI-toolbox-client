@@ -124,6 +124,8 @@ export interface NativePlan {
   }[];
 }
 export interface CodexConfiguration {
+  /** Raw explicit override; not inferred model capacity. */
+  contextWindow?: unknown;
   configPath: string;
   authPath: string;
   revision: string;
@@ -140,6 +142,11 @@ export interface CodexConfiguration {
   canRestore: boolean;
 }
 export interface ClaudeConfiguration {
+  /** Raw env.CLAUDE_CODE_MAX_CONTEXT_TOKENS; applicability depends on Claude Code. */
+  contextWindow?: unknown;
+  modelEfforts?: Record<string, string>;
+  modelEffortKeys?: Record<string, string>;
+  effortOverrides?: { environment: string; global: string };
   configPath: string;
   revision: string;
   baseUrl: string;
@@ -156,6 +163,10 @@ export interface ClaudeConfiguration {
   canRestore: boolean;
 }
 export interface OpenCodeConfiguration {
+  modelContexts?: Record<string, unknown>;
+  modelContextConflicts?: string[];
+  modelEfforts?: Record<string, string>;
+  modelEffortConflicts?: string[];
   configPath: string;
   revision: string;
   baseUrl: string;
@@ -388,7 +399,8 @@ export async function nativeCall<T>(
   options: Record<string, unknown> = {},
 ): Promise<T> {
   if (!nativeAvailable) throw new Error('请在桌面客户端中执行此操作；网页预览只展示服务端列表。');
-  const operationId = crypto.randomUUID();
+  const operationId =
+    typeof options.operationId === 'string' ? options.operationId : crypto.randomUUID();
   const quiet = quietActions.includes(action);
   if (!quiet) {
     window.dispatchEvent(new CustomEvent('toolbox-operation', { detail: { operationId } }));
