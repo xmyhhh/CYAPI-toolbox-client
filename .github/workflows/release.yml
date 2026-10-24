@@ -51,6 +51,8 @@ jobs:
             platform: x86_64
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry-run && inputs.tag || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -136,6 +138,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry-run && inputs.tag || github.sha }}
 
       # The dry run still validates the publish pipeline up to the checksums,
       # only the release itself is skipped.
@@ -218,7 +222,7 @@ jobs:
         with:
           repository: xmyhhh/CYAPI-toolbox-client
           path: CYAPI-toolbox-client
-          ref: ${{ github.sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry-run && inputs.tag || github.sha }}
 
       - if: steps.secrets.outputs.enabled == 'true'
         uses: actions/setup-node@v4
@@ -266,6 +270,8 @@ jobs:
         name: Build the website
         run: npm run build
         working-directory: website
+        env:
+          CYAPI_REQUIRE_ALL_PLATFORMS: '1'
 
       - if: steps.secrets.outputs.enabled == 'true'
         name: Trust the server host key
@@ -286,6 +292,7 @@ jobs:
           set -euo pipefail
           printf '%s\n' "$SITE_DEPLOY_KEY" > deploy_key
           chmod 600 deploy_key
+          export CYAPI_EXPECTED_VERSION="$(node -p "require('./CYAPI-toolbox-client/package.json').version")"
           CYAPI_SERVER_ADDRESS="$SITE_SSH_HOST" \
           CYAPI_SSH_USER="$SITE_SSH_USER" \
           CYAPI_IDENTITY_FILE=deploy_key \
