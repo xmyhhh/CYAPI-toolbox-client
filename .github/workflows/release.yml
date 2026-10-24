@@ -174,19 +174,18 @@ jobs:
           files: |
             assets/*
 
-  # After a real release the installers land on the website as well. The job
-  # checks the private website sources out, builds the site against the
-  # release artifacts and deploys it with the existing deploy script. Every
-  # address and key stays in Actions settings; nothing is written here.
+  # 暂时不做官网自动部署：此任务有意停用，脚本保留供以后启用。
+  # CI 仍构建安装包并发布 GitHub Release；官网单独手动同步，暂不配置部署 Secrets。
+  # 恢复自动部署时，先配置凭据，再用下方原条件替换固定 false。
   website:
     name: Publish the website
     needs: release
-    # The env context is not available in a job-level if, so the ci-* gate
-    # reads the tag name directly: only v* tags deploy the website.
-    if: >-
-      needs.release.result == 'success' &&
-      ((github.event_name == 'push' && startsWith(github.ref_name, 'v')) ||
-       (github.event_name == 'workflow_dispatch' && !inputs.dry-run && startsWith(inputs.tag, 'v')))
+    if: ${{ false }}
+    # Original condition (reserved for future use):
+    # if: >-
+    #   needs.release.result == 'success' &&
+    #   ((github.event_name == 'push' && startsWith(github.ref_name, 'v')) ||
+    #    (github.event_name == 'workflow_dispatch' && !inputs.dry-run && startsWith(inputs.tag, 'v')))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

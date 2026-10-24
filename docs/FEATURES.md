@@ -46,7 +46,7 @@ npm run desktop:exe    # 仅生成可执行文件
 
 项目专属 Rust 通过 `npm run desktop:setup` 安装到本机缓存目录（Windows 为 `%LOCALAPPDATA%\CYAPI-toolbox\build-tools`，macOS 为 `~/Library/Caches/CYAPI-toolbox/build-tools`），不修改系统 PATH。官方源较慢时运行 `scripts/setup-desktop.sh --use-mirror`（Windows 为 `scripts/setup-desktop.ps1 -UseMirror`）。用户运行客户端不需要安装 Rust。
 
-正式发版由 GitHub Actions 完成。`.github/workflows/release.yml` 在推送 `v*` 标签（如 `v1.1.0`，须与 `package.json` 版本一致）时自动构建 Windows NSIS 安装包与免安装版、macOS Apple Silicon 与 Intel 的 DMG 与免安装 ZIP，并把产物发布到 GitHub Releases；`.github/workflows/ci.yml` 在每次推送与提交 PR 时运行前端测试与构建。
+正式发版由 GitHub Actions 完成。`.github/workflows/release.yml` 在推送 `v*` 标签（须与 `package.json` 版本一致）时自动构建 Windows NSIS 安装包与免安装版、macOS Apple Silicon 与 Intel 的 DMG，并把产物发布到 GitHub Releases；`.github/workflows/ci.yml` 在每次推送与提交 PR 时运行前端测试与构建。官网自动部署暂时不做，`Publish the website` 任务有意停用，保留脚本供以后启用；目前官网单独手动同步已发布的 CI 产物，无需配置官网部署 Secrets。
 
 服务端由独立的私有项目 `server/` 管理（未随本仓库发布），启动命令见该项目说明。根目录 `package.json` 中只包含客户端命令。
 

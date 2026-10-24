@@ -1,9 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { parse } from 'yaml';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { requiredReleaseAssets, verifyReleaseAssets } from '../scripts/release-assets.mjs';
+
+test('website auto-deployment stays disabled while release publishing remains enabled', async () => {
+  const source = await readFile(
+    new URL('../.github/workflows/release.yml', import.meta.url),
+    'utf8',
+  );
+  const workflow = parse(source);
+  assert.equal(workflow.jobs.website.if, '${{ false }}');
+  assert.match(source, /暂时不做官网自动部署/);
+  assert.equal(workflow.jobs.website.needs, 'release');
+  assert.ok(
+    workflow.jobs.website.steps.some(
+      (step: { name?: string }) => step.name === 'Deploy the website',
+    ),
+  );
+  assert.ok(
+    workflow.jobs.release.steps.some(
+      (step: { name?: string; if?: string }) =>
+        step.name === 'Create the release' && step.if === "env.DRY_RUN != 'true'",
+    ),
+  );
+});
 
 test('a release requires both macOS architectures and both Windows packages', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'cyapi-release-assets-'));
