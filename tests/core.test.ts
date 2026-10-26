@@ -6,6 +6,12 @@ import { installer } from '../src/lib/api/installer.ts';
 import { catalogCategories, filterCatalog } from '../src/lib/catalog.ts';
 import { canManageInstallation, visibleInWorkspace } from '../src/lib/installations.ts';
 import type { NativeRecord } from '../src/lib/api/native.ts';
+import type { CodexConfiguration } from '../src/lib/api/native.ts';
+import {
+  CodexSaveConflict,
+  codexSaveConflictMessage,
+  prepareCodexSave,
+} from '../src/lib/codex-save.ts';
 import {
   configuredModels,
   modelEffort,
@@ -16,6 +22,8 @@ import {
   parseContextWindow,
   contextWindowChange,
   selectedContextChanges,
+  reasoningLevelsText,
+  selectedReasoningLevelChanges,
 } from '../src/lib/model-settings.ts';
 import {
   integrationManifest,
@@ -28,6 +36,119 @@ test('model selection keeps a single default in the configured set without dupli
   assert.deepEqual(configuredModels([' a ', 'b', 'a', ''], 'b'), ['a', 'b']);
   assert.deepEqual(configuredModels(['a'], 'c'), ['a', 'c']);
   assert.deepEqual(configuredModels([], ''), []);
+});
+
+test('Codex save rebases disjoint model edits without discarding externally repaired metadata', () => {
+  const before: CodexConfiguration = {
+    configPath: '/home/.codex/config.toml',
+    authPath: '/home/.codex/auth.json',
+    revision: 'old',
+    saveRevision: 'old',
+    rebaseGuard: 'same-provider-auth',
+    provider: 'cyapi-toolbox',
+    baseUrl: 'https://example.invalid/v1',
+    model: 'sol',
+    models: ['sol'],
+    reasoningEffort: 'none',
+    modelSettings: { sol: { reasoningLevels: [], defaultLevel: null } },
+    apiKeyConfigured: true,
+    authMode: 'API Key',
+    canRestore: false,
+  };
+  const latest: CodexConfiguration = {
+    ...before,
+    revision: 'new',
+    saveRevision: 'new',
+    reasoningEffort: '',
+    modelSettings: {
+      sol: { reasoningLevels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
+    },
+  };
+  const draft = {
+    baseUrl: before.baseUrl,
+    apiKey: '',
+    model: 'sol',
+    models: ['sol'],
+    reasoningEffort: 'none',
+    modelSettings: { sol: { reasoningLevels: null, defaultLevel: null, contextWindow: 100000 } },
+  };
+  const merged = prepareCodexSave(before, latest, draft);
+  assert.equal(merged.reasoningEffort, '');
+  assert.deepEqual(merged.modelSettings.sol, {
+    reasoningLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    defaultLevel: 'medium',
+    contextWindow: 100000,
+  });
+  assert.equal(merged.revision, 'new');
+  assert.equal(merged.saveRevision, 'new');
+  assert.equal(latest.modelSettings?.sol.contextWindow, undefined);
+  assert.throws(
+    () => prepareCodexSave(before, latest, { ...draft, reasoningEffort: 'max' }),
+    CodexSaveConflict,
+  );
+  assert.throws(
+    () => prepareCodexSave(before, { ...latest, rebaseGuard: 'new-auth' }, draft),
+    CodexSaveConflict,
+  );
+  assert.throws(
+    () => prepareCodexSave(before, { ...latest, configPath: '/another/config.toml' }, draft),
+    CodexSaveConflict,
+  );
+  assert.throws(
+    () => prepareCodexSave({ ...before, rebaseGuard: undefined }, latest, draft),
+    CodexSaveConflict,
+  );
+  assert.equal(
+    prepareCodexSave(before, { ...before, revision: 'background-comment-change' }, draft).revision,
+    'background-comment-change',
+  );
+  assert.equal(
+    prepareCodexSave(before, latest, { ...draft, reasoningEffort: '' }).reasoningEffort,
+    '',
+  );
+});
+
+test('only recognized Codex save conflicts avoid the automatic error-log dialog', () => {
+  const text =
+    'Codex 的模型、线路或认证设置已被其他程序修改，请重新读取并核对后保存；当前输入已保留';
+  assert.ok(codexSaveConflictMessage('codex-save', text));
+  assert.ok(codexSaveConflictMessage('codex-save', 'Codex 配置已被其他程序修改，请重新读取'));
+  assert.equal(codexSaveConflictMessage('codex-restore', text), undefined);
+  assert.equal(
+    codexSaveConflictMessage('codex-save', '无法替换 Codex 配置文件，请检查是否被占用'),
+    undefined,
+  );
+  assert.equal(
+    codexSaveConflictMessage(
+      'codex-save',
+      'Codex 配置保存中断，请用本工具的备份恢复，或检查配置文件',
+    ),
+    undefined,
+  );
+});
+
+test('OpenCode menu levels are explicit capability patches, separate from request defaults', () => {
+  assert.equal(reasoningLevelsText(undefined), '');
+  assert.equal(reasoningLevelsText(['low', 'xhigh', 'max']), 'low, xhigh, max');
+  assert.equal(reasoningLevelsText({ future: true }), '{"future":true}');
+  assert.deepEqual(selectedReasoningLevelChanges({}, ['sol'], 'sol'), {});
+  assert.deepEqual(
+    selectedReasoningLevelChanges(
+      { sol: 'low, medium, high, xhigh, max', other: 'bad value' },
+      [],
+      'sol',
+    ),
+    {
+      sol: ['low', 'medium', 'high', 'xhigh', 'max'],
+    },
+  );
+  assert.deepEqual(selectedReasoningLevelChanges({ sol: '' }, ['sol'], ''), { sol: null });
+  assert.deepEqual(selectedReasoningLevelChanges({ sol: 'custom-future' }, ['sol'], ''), {
+    sol: ['custom-future'],
+  });
+  for (const text of ['low,low', 'low,', 'bad value', 'a'.repeat(65), 'low,hi\u0000']) {
+    assert.throws(() => selectedReasoningLevelChanges({ sol: text }, [], 'sol'));
+  }
 });
 
 test('new full Claude IDs reuse existing canonical settings without guessing aliases or gateway IDs', () => {

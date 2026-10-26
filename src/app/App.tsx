@@ -273,8 +273,8 @@ export default function App() {
   useEffect(() => {
     let active = true;
     async function start() {
-      // Fetch the route manifest once per application session. Settings pages and
-      // workspace switches reuse the cached snapshot until the user refreshes it.
+      // Hydrate persistent routes first, then refresh once in the background.
+      // All workspaces subscribe to the same snapshot and reuse in-flight work.
       void readCyapiRoutes().catch(() => {});
       setBusy('正在加载工作空间');
       try {

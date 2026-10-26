@@ -64,6 +64,8 @@ pub struct Input {
     pub model_effort_changes: BTreeMap<String, String>,
     #[serde(default)]
     pub model_context_changes: BTreeMap<String, Option<u64>>,
+    #[serde(default)]
+    pub model_reasoning_level_changes: BTreeMap<String, Option<Vec<String>>>,
     pub revision: String,
 }
 
@@ -400,6 +402,38 @@ fn reasoning_effort(doc: &Value) -> &str {
         .unwrap_or("")
 }
 
+// Read only explicit V2 capability declarations. Do not turn a default request
+// option or a custom variant into a claim about a model's supported efforts.
+fn model_reasoning_levels(doc: &Value) -> (BTreeMap<String, Value>, Vec<String>) {
+    let mut levels: BTreeMap<String, Option<Value>> = BTreeMap::new();
+    for (alias, entry) in model_entries(doc).into_iter().flatten() {
+        let id = model_id(Layout::of(doc), alias, entry).to_string();
+        let value = entry
+            .pointer("/capabilities/reasoning/effort")
+            .unwrap_or(&Value::Null);
+        levels
+            .entry(id)
+            .and_modify(|current| {
+                if current.as_ref() != Some(value) {
+                    *current = None;
+                }
+            })
+            .or_insert_with(|| Some(value.clone()));
+    }
+    let conflicts = levels
+        .iter()
+        .filter(|(_, value)| value.is_none())
+        .map(|(id, _)| id.clone())
+        .collect();
+    (
+        levels
+            .into_iter()
+            .map(|(id, value)| (id, value.unwrap_or(Value::Null)))
+            .collect(),
+        conflicts,
+    )
+}
+
 pub(crate) fn detect_cli() -> (bool, String) {
     #[cfg(windows)]
     {
@@ -481,6 +515,7 @@ fn snapshot_view(data: &Path, snapshot: &Snapshot, secret: bool) -> Result<Value
     let key = api_key(&doc);
     let (efforts, effort_conflicts) = model_efforts(&doc);
     let (contexts, context_conflicts) = model_contexts(&doc);
+    let (levels, level_conflicts) = model_reasoning_levels(&doc);
     let can_restore = read_backup(data)
         .ok()
         .flatten()
@@ -498,6 +533,9 @@ fn snapshot_view(data: &Path, snapshot: &Snapshot, secret: bool) -> Result<Value
         "modelEffortConflicts": effort_conflicts,
         "modelContexts": contexts,
         "modelContextConflicts": context_conflicts,
+        "modelReasoningLevels": levels,
+        "modelReasoningLevelConflicts": level_conflicts,
+        "reasoningLevelsEditable": Layout::of(&doc) == Layout::Native,
         "apiKeyConfigured": key.is_some(),
         "authMode": if key.is_some() { "API Key" } else { "未配置" },
         "settingsExists": snapshot.bytes.is_some(),
@@ -533,6 +571,22 @@ fn normalize_url(raw: &str) -> String {
 
 fn validate(input: &Input) -> Result<()> {
     crate::model_selection::models(&input.model, input.models.as_deref().unwrap_or_default())?;
+    for levels in input.model_reasoning_level_changes.values().flatten() {
+        if levels.len() > 64
+            || levels.iter().any(|level| {
+                level.is_empty()
+                    || level.len() > 64
+                    || level.chars().any(|c| c.is_control() || c.is_whitespace())
+            })
+            || levels
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != levels.len()
+        {
+            return Err("可选思考等级最多 64 项，每项须为不超过 64 字节的非空字符串，不能重复或包含空白、控制字符".into());
+        }
+    }
     // Levels are provider-specific. Validate only explicit edits, never existing
     // values, and do not constrain them to the toolbox's suggested UI choices.
     for effort in input
@@ -672,6 +726,17 @@ pub fn save_at(location: &Location, data: &Path, input: &Input) -> Result<Value>
     }
     let layout = Layout::of(&doc);
 
+    if !input.model_reasoning_level_changes.is_empty() && layout != Layout::Native {
+        return Err("可选思考等级声明仅支持 OpenCode V2 原生 providers 配置；请先迁移配置，工具箱不会自动改写旧格式".into());
+    }
+    if input
+        .model_reasoning_level_changes
+        .keys()
+        .any(|id| !selected.contains(id))
+    {
+        return Err("可选思考等级修改只能包含已选择的模型 ID".into());
+    }
+
     let root_node = parse_cst(&current)?;
     let object = root_node
         .object_value_or_create()
@@ -806,6 +871,50 @@ pub fn save_at(location: &Location, data: &Path, input: &Input) -> Result<Value>
                     }
                 }
             }
+            if let Some(levels) = input.model_reasoning_level_changes.get(&id) {
+                // Preserve all variants, request defaults and other capability
+                // controls. Refuse opaque shapes rather than replacing them.
+                let old_capabilities = previous.and_then(|entry| entry.get("capabilities"));
+                let old_reasoning = old_capabilities.and_then(|value| value.get("reasoning"));
+                if old_capabilities.is_some_and(|value| !value.is_object())
+                    || old_reasoning.is_some_and(|value| !value.is_object())
+                {
+                    return Err("OpenCode 模型 capabilities/reasoning 必须是 JSON 对象，无法修改可选思考等级".into());
+                }
+                if levels.is_some()
+                    || old_reasoning.is_some_and(|value| value.get("effort").is_some())
+                {
+                    let capabilities = entry
+                        .object_value_or_create("capabilities")
+                        .ok_or("OpenCode 模型 capabilities 必须是 JSON 对象")?;
+                    let reasoning = capabilities
+                        .object_value_or_create("reasoning")
+                        .ok_or("OpenCode 模型 reasoning 必须是 JSON 对象")?;
+                    if let Some(levels) = levels {
+                        let supported = CstInputValue::Bool(true);
+                        match reasoning.get("supported") {
+                            Some(prop) => prop.set_value(supported),
+                            None => {
+                                reasoning.append("supported", supported);
+                            }
+                        }
+                        let values = CstInputValue::Array(
+                            levels
+                                .iter()
+                                .map(|level| CstInputValue::String(level.clone()))
+                                .collect(),
+                        );
+                        match reasoning.get("effort") {
+                            Some(prop) => prop.set_value(values),
+                            None => {
+                                reasoning.append("effort", values);
+                            }
+                        }
+                    } else if let Some(prop) = reasoning.get("effort") {
+                        prop.remove();
+                    }
+                }
+            }
             aliases.push(alias);
         }
     }
@@ -927,8 +1036,149 @@ mod tests {
             reasoning_effort: None,
             model_effort_changes: BTreeMap::new(),
             model_context_changes: BTreeMap::new(),
+            model_reasoning_level_changes: BTreeMap::new(),
             model: "example/model".into(),
             revision: view["revision"].as_str().unwrap().into(),
+        }
+    }
+
+    #[test]
+    fn menu_levels_patch_all_model_aliases_without_rewriting_defaults_or_variants() {
+        let (base, root, data) = fixture();
+        let doc = json!({
+            "model": "cyapi/sol-a",
+            "providers": {"cyapi": {
+                "package": PROVIDER_PACKAGE,
+                "settings": {"apiKey": "dummy", "baseURL": "https://old.invalid/v1"},
+                "models": {
+                    "sol-a": {"modelID": "sol", "settings": {"reasoningEffort": "xhigh"},
+                        "capabilities": {"tools": true, "reasoning": {"supported": true, "effort": ["low"], "toggle": true}},
+                        "variants": [{"id": "deep", "settings": {"reasoningEffort": "max"}}]},
+                    "sol-b": {"modelID": "sol", "capabilities": {"reasoning": {"supported": true, "effort": ["high"]}}},
+                    "other": {"settings": {"reasoningEffort": "custom"}, "capabilities": {"reasoning": "opaque"}}
+                }
+            }}
+        });
+        fs::write(
+            root.join("opencode.jsonc"),
+            format!(
+                "// keep levels comment\n{}",
+                serde_json::to_string_pretty(&doc).unwrap()
+            ),
+        )
+        .unwrap();
+        let before = editor_view(&root, &data).unwrap();
+        assert_eq!(before["modelReasoningLevelConflicts"], json!(["sol"]));
+        assert_eq!(before["reasoningLevelsEditable"], true);
+        let mut change = input(&before);
+        change.model = "sol".into();
+        change.api_key.clear();
+        change.base_url = "https://old.invalid/v1".into();
+        let levels = vec![
+            "low".into(),
+            "medium".into(),
+            "high".into(),
+            "xhigh".into(),
+            "max".into(),
+        ];
+        change
+            .model_reasoning_level_changes
+            .insert("sol".into(), Some(levels.clone()));
+        let saved = save(&root, &data, &change).unwrap();
+        assert_eq!(saved["modelReasoningLevels"]["sol"], json!(levels));
+        assert_eq!(saved["modelReasoningLevelConflicts"], json!([]));
+        let patched = read_doc(&root);
+        let entries = &patched["providers"][PROVIDER]["models"];
+        assert_eq!(
+            entries["sol-a"]["settings"],
+            doc["providers"][PROVIDER]["models"]["sol-a"]["settings"]
+        );
+        assert_eq!(
+            entries["sol-a"]["variants"],
+            doc["providers"][PROVIDER]["models"]["sol-a"]["variants"]
+        );
+        assert_eq!(entries["sol-a"]["capabilities"]["tools"], true);
+        assert_eq!(
+            entries["sol-a"]["capabilities"]["reasoning"]["toggle"],
+            true
+        );
+        assert_eq!(
+            entries["sol-b"]["capabilities"]["reasoning"]["effort"],
+            json!(levels)
+        );
+        assert_eq!(
+            entries["other"],
+            doc["providers"][PROVIDER]["models"]["other"]
+        );
+        assert!(fs::read_to_string(root.join("opencode.jsonc"))
+            .unwrap()
+            .contains("// keep levels comment"));
+
+        change.revision = saved["revision"].as_str().unwrap().into();
+        change
+            .model_reasoning_level_changes
+            .insert("sol".into(), None);
+        let cleared = save(&root, &data, &change).unwrap();
+        assert_eq!(cleared["modelReasoningLevels"]["sol"], Value::Null);
+        let cleared_doc = read_doc(&root);
+        assert_eq!(
+            cleared_doc["providers"][PROVIDER]["models"]["sol-a"]["capabilities"]["reasoning"]
+                ["supported"],
+            true
+        );
+        assert_eq!(
+            cleared_doc["providers"][PROVIDER]["models"]["sol-a"]["variants"],
+            entries["sol-a"]["variants"]
+        );
+        restore(&root, &data, cleared["revision"].as_str().unwrap()).unwrap();
+        assert_eq!(read_doc(&root), patched);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn invalid_menu_level_edits_never_write_configuration_or_backup() {
+        for levels in [
+            vec!["".into()],
+            vec!["bad value".into()],
+            vec!["x".repeat(65)],
+            vec!["low".into(), "low".into()],
+        ] {
+            let (base, root, data) = fixture();
+            let mut pending = input(&view(&root, &data).unwrap());
+            pending
+                .model_reasoning_level_changes
+                .insert(pending.model.clone(), Some(levels));
+            assert!(save(&root, &data, &pending).is_err());
+            assert!(!root.join("opencode.json").exists());
+            assert!(!backup_path(&data).exists());
+            fs::remove_dir_all(base).unwrap();
+        }
+        for (layout, capabilities, patch_id) in [
+            (Layout::Legacy, json!({}), "sol"),
+            (Layout::Native, json!({"reasoning": true}), "sol"),
+            (
+                Layout::Native,
+                json!({"reasoning": {"effort": ["low"]}}),
+                "not-selected",
+            ),
+        ] {
+            let (base, root, data) = fixture();
+            let mut doc = json!({"model": "cyapi/sol"});
+            doc[layout.providers()][PROVIDER]["models"]["sol"] =
+                json!({"capabilities": capabilities});
+            doc[layout.providers()][PROVIDER][layout.settings()] =
+                json!({"apiKey": "dummy", "baseURL": "https://old.invalid"});
+            let bytes = serde_json::to_vec(&doc).unwrap();
+            fs::write(root.join("opencode.json"), &bytes).unwrap();
+            let mut pending = input(&view(&root, &data).unwrap());
+            pending.model = "sol".into();
+            pending
+                .model_reasoning_level_changes
+                .insert(patch_id.into(), Some(vec!["low".into()]));
+            assert!(save(&root, &data, &pending).is_err());
+            assert_eq!(fs::read(root.join("opencode.json")).unwrap(), bytes);
+            assert!(!backup_path(&data).exists());
+            fs::remove_dir_all(base).unwrap();
         }
     }
 

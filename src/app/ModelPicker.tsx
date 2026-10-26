@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { LoaderCircle, Plus, RefreshCw, X } from 'lucide-react';
+import { ChevronDown, LoaderCircle, Plus, RefreshCw, X } from 'lucide-react';
 import { nativeAvailable, nativeCall } from '../lib/api/native';
 import { configuredModels } from '../lib/model-settings';
 
@@ -19,6 +19,7 @@ interface ModelPickerProps {
   required?: boolean;
   placeholder?: string;
   renderModelSettings?: (model: string, index: number) => ReactNode;
+  renderModelSummary?: (model: string) => ReactNode;
 }
 
 interface ModelList {
@@ -41,6 +42,7 @@ export function ModelPicker({
   required,
   placeholder,
   renderModelSettings,
+  renderModelSummary,
 }: ModelPickerProps) {
   const [models, setModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -50,6 +52,7 @@ export function ModelPicker({
   const [manual, setManual] = useState('');
   const [search, setSearch] = useState('');
   const [pending, setPending] = useState<string[]>([]);
+  const [editingModel, setEditingModel] = useState<string>();
   const request = useRef(0);
 
   useEffect(() => {
@@ -136,7 +139,9 @@ export function ModelPicker({
   return (
     <div className="n-config-field n-model-field">
       <div className="n-config-label-row">
-        <span className="n-model-heading">模型配置 · 已配置 {selected.length} 个</span>
+        <span className="n-model-heading">
+          模型 <span className="n-model-count">{selected.length}</span>
+        </span>
         <button
           type="button"
           className="n-inline-action"
@@ -149,60 +154,86 @@ export function ModelPicker({
           {adding ? '收起添加' : '添加模型'}
         </button>
       </div>
-      <p className="n-config-note">
-        添加的模型用于在工具内切换，不会同时调用或自动调度。所有更改在保存后写入。
-      </p>
-      <label htmlFor={id}>默认模型</label>
-      <select
-        id={id}
-        required={required}
-        value={defaultModel}
-        onChange={(event) => chooseDefault(event.target.value)}
-        disabled={disabled}
-      >
-        <option value="" disabled={required}>
-          {required ? '请先添加并选择模型' : '使用工具自身默认模型'}
-        </option>
-        {selected.map((model) => (
-          <option key={model} value={model}>
-            {model}
+      <div className="n-model-default-picker">
+        <label htmlFor={id}>默认模型</label>
+        <select
+          id={id}
+          required={required}
+          value={defaultModel}
+          onChange={(event) => chooseDefault(event.target.value)}
+          disabled={disabled}
+        >
+          <option value="" disabled={required}>
+            {required ? '请先添加并选择模型' : '使用工具自身默认模型'}
           </option>
-        ))}
-      </select>
+          {selected.map((model) => (
+            <option key={model} value={model}>
+              {model}
+            </option>
+          ))}
+        </select>
+      </div>
+      <p className="n-config-note n-model-caption">用于工具内切换，修改后统一保存。</p>
       {selected.length > 0 ? (
         <div className="n-model-list" role="group" aria-label="已配置模型">
           {selected.map((model, index) => (
-            <div key={model} className="n-model-configured">
+            <div
+              key={model}
+              className={`n-model-configured${editingModel === model ? ' is-editing' : ''}`}
+            >
               <div className="n-model-choice">
-                <span className="n-model-id" title={model}>
-                  {model}
-                </span>
-                {model === defaultModel ? (
-                  <span className="n-model-default">默认</span>
-                ) : (
+                {renderModelSettings ? (
                   <button
                     type="button"
-                    className="n-inline-action"
+                    className="n-model-edit-toggle"
                     disabled={disabled}
-                    onClick={() => chooseDefault(model)}
-                    aria-label={`将 ${model} 设为默认`}
+                    aria-expanded={editingModel === model}
+                    aria-controls={`${id}-settings-${index}`}
+                    aria-label={`配置 ${model}`}
+                    onClick={() => setEditingModel(editingModel === model ? undefined : model)}
                   >
-                    设为默认
+                    <ChevronDown
+                      size={15}
+                      className={editingModel === model ? 'n-chevron-open' : ''}
+                    />
+                    <span className="n-model-identity">
+                      <span className="n-model-id">{model}</span>
+                      {renderModelSummary && (
+                        <span className="n-model-overview">{renderModelSummary(model)}</span>
+                      )}
+                    </span>
+                    <span className="n-model-edit-label">
+                      {editingModel === model ? '收起' : '设置'}
+                    </span>
                   </button>
+                ) : (
+                  <span className="n-model-id" title={model}>
+                    {model}
+                  </span>
                 )}
+                {model === defaultModel && <span className="n-model-default">默认</span>}
                 <button
                   type="button"
                   className="n-inline-action"
                   disabled={disabled || model === defaultModel}
                   title={model === defaultModel ? '请先选择另一个默认模型再移除' : `移除 ${model}`}
                   aria-label={`移除 ${model}`}
-                  onClick={() => onModelsChange(selected.filter((id) => id !== model))}
+                  onClick={() => {
+                    onModelsChange(selected.filter((id) => id !== model));
+                    if (editingModel === model) setEditingModel(undefined);
+                  }}
                 >
                   移除
                 </button>
               </div>
               {renderModelSettings && (
-                <div className="n-model-settings">{renderModelSettings(model, index)}</div>
+                <div
+                  id={`${id}-settings-${index}`}
+                  hidden={editingModel !== model}
+                  className="n-model-settings"
+                >
+                  {editingModel === model && renderModelSettings(model, index)}
+                </div>
               )}
             </div>
           ))}
@@ -297,9 +328,7 @@ export function ModelPicker({
               >
                 添加所选 {pending.length > 0 ? `${pending.length} 个模型` : '模型'}
               </button>
-              <p className="n-config-note">
-                已获取 {models.length} 个模型。列表只提供模型 ID，不代表已验证推理等级或接口可用性。
-              </p>
+              <p className="n-config-note">已获取 {models.length} 个模型，未验证接口及推理能力。</p>
             </>
           )}
           {error && (

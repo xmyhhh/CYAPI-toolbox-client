@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { CodexModelSetting } from '../lib/api/native';
 import { parseContextWindow } from '../lib/model-settings';
+import { SettingHelp } from './ModelSettingField';
 
 const levelPresets = [
   'none',
@@ -73,8 +74,11 @@ function orderLevels(levels: string[]): string[] {
   return [...known, ...levels.filter((level) => !levelPresets.includes(level)).sort()];
 }
 
-function sameDraft(original: CodexSettingDraft | undefined, draft: CodexSettingDraft): boolean {
-  if (!original) return false;
+export function sameDraft(
+  original: CodexSettingDraft | undefined,
+  draft: CodexSettingDraft,
+): boolean {
+  original ??= emptySettingDraft;
   const a = orderLevels(original.levels);
   const b = orderLevels(draft.levels);
   return (
@@ -103,20 +107,11 @@ export function CodexModelSettings({
   onReset: () => void;
   disabled?: boolean;
 }) {
-  const [editing, setEditing] = useState(false);
   const [custom, setCustom] = useState('');
   const [error, setError] = useState('');
   const changed = !sameDraft(original, draft);
   const levels = orderLevels(draft.levels);
-  const options = [
-    ...levelPresets,
-    ...levels.filter((level) => !levelPresets.includes(level)),
-  ];
-  const summary = [
-    draft.contextWindow.trim() ? `窗口 ${draft.contextWindow.trim()}` : '窗口不声明',
-    levels.length ? `等级 ${levels.join(' / ')}` : '等级不声明',
-    draft.defaultLevel ? `默认 ${draft.defaultLevel}` : '默认自动',
-  ].join(' · ');
+  const options = [...levelPresets, ...levels.filter((level) => !levelPresets.includes(level))];
 
   function toggle(level: string, checked: boolean) {
     const next = checked
@@ -144,117 +139,104 @@ export function CodexModelSettings({
   }
 
   return (
-    <div className="n-model-reasoning">
-      <div className="n-model-effort-summary">
-        <span>
-          逐模型目录声明：<strong>{summary}</strong>
-        </span>
-        {changed && <span className="n-model-default">待保存</span>}
+    <div className="n-codex-model-editor" aria-label={`${model} 的模型目录设置`}>
+      <div className="n-model-editor-heading">
+        <span>模型设置</span>
+        {changed && <span className="n-model-pending">待保存</span>}
+      </div>
+      <div className="n-model-editor-grid">
+        <div className="n-config-field">
+          <label htmlFor={`${id}-context`}>
+            上下文窗口 <span>tokens</span>
+          </label>
+          <input
+            id={`${id}-context`}
+            inputMode="numeric"
+            value={draft.contextWindow}
+            placeholder="留空沿用目录或工具原值"
+            spellCheck={false}
+            disabled={disabled}
+            onChange={(event) => onChange({ ...draft, contextWindow: event.target.value })}
+          />
+        </div>
+        <div className="n-config-field">
+          <label htmlFor={`${id}-default`}>默认思考等级</label>
+          <select
+            id={`${id}-default`}
+            value={draft.defaultLevel}
+            disabled={disabled}
+            onChange={(event) => {
+              const level = event.target.value;
+              onChange({
+                ...draft,
+                defaultLevel: level,
+                levels:
+                  level && !draft.levels.includes(level) ? [...draft.levels, level] : draft.levels,
+              });
+            }}
+          >
+            <option value="">自动（沿用目录）</option>
+            {levels.map((level) => (
+              <option key={level} value={level}>
+                {level}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <fieldset disabled={disabled} className="n-codex-levels">
+        <legend>可选思考等级</legend>
+        {options.map((level) => (
+          <label key={level} className={levels.includes(level) ? 'is-selected' : undefined}>
+            <input
+              type="checkbox"
+              checked={levels.includes(level)}
+              disabled={disabled}
+              onChange={(event) => toggle(level, event.target.checked)}
+            />
+            <span>{level}</span>
+          </label>
+        ))}
+      </fieldset>
+      <div className="n-model-manual">
+        <input
+          aria-label={`给 ${model} 添加自定义思考等级`}
+          value={custom}
+          spellCheck={false}
+          maxLength={64}
+          disabled={disabled}
+          onChange={(event) => setCustom(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              addCustom();
+            }
+          }}
+          placeholder="自定义等级，如 future-level"
+        />
         <button
           type="button"
-          className="n-inline-action"
-          disabled={disabled}
-          aria-expanded={editing}
-          aria-controls={`${id}-editor`}
-          onClick={() => setEditing(!editing)}
-          aria-label={`配置 ${model} 的上下文窗口与思考等级`}
+          className="n-button"
+          disabled={disabled || !custom.trim()}
+          onClick={addCustom}
         >
-          {editing ? '收起' : '配置'}
+          添加
         </button>
       </div>
-      {editing && (
-        <div className="n-model-effort-editor n-config-field" id={`${id}-editor`}>
-          <div className="n-config-field">
-            <label htmlFor={`${id}-context`}>{model} 的上下文窗口（tokens）</label>
-            <input
-              id={`${id}-context`}
-              inputMode="numeric"
-              value={draft.contextWindow}
-              placeholder="留空不声明，沿用目录或工具原值"
-              spellCheck={false}
-              disabled={disabled}
-              onChange={(event) => onChange({ ...draft, contextWindow: event.target.value })}
-            />
-          </div>
-          <fieldset disabled={disabled} className="n-codex-levels">
-            <legend>思考等级声明（写入模型目录，Codex 据此显示可挡选等级）</legend>
-            {options.map((level) => (
-              <label key={level}>
-                <input
-                  type="checkbox"
-                  checked={levels.includes(level)}
-                  disabled={disabled}
-                  onChange={(event) => toggle(level, event.target.checked)}
-                />
-                <span>{level}</span>
-              </label>
-            ))}
-          </fieldset>
-          <div className="n-model-manual">
-            <input
-              aria-label={`给 ${model} 添加自定义思考等级`}
-              value={custom}
-              spellCheck={false}
-              maxLength={64}
-              disabled={disabled}
-              onChange={(event) => setCustom(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  addCustom();
-                }
-              }}
-              placeholder="添加自定义思考等级"
-            />
-            <button
-              type="button"
-              className="n-button"
-              disabled={disabled || !custom.trim()}
-              onClick={addCustom}
-            >
-              添加
-            </button>
-          </div>
-          <div className="n-config-field">
-            <label htmlFor={`${id}-default`}>默认思考等级</label>
-            <select
-              id={`${id}-default`}
-              value={draft.defaultLevel}
-              disabled={disabled}
-              onChange={(event) => {
-                const level = event.target.value;
-                onChange({
-                  ...draft,
-                  defaultLevel: level,
-                  levels:
-                    level && !draft.levels.includes(level)
-                      ? [...draft.levels, level]
-                      : draft.levels,
-                });
-              }}
-            >
-              <option value="">自动（不声明默认等级）</option>
-              {levels.map((level) => (
-                <option key={level} value={level}>
-                  {level}
-                </option>
-              ))}
-            </select>
-          </div>
-          <p className="n-config-note">
-            声明会写入 Codex 模型目录，供该模型挡选。候选只代表可声明的值，不代表服务商真的支持；不确定请留空，继续沿用目录原始元数据。保存后的全局推理等级会覆盖这里的默认值。
-          </p>
-          {changed && (
-            <button
-              type="button"
-              className="n-inline-action"
-              disabled={disabled}
-              onClick={onReset}
-            >
-              撤销此项修改
-            </button>
-          )}
-        </div>
+      <p className="n-config-note">
+        仅作用于此模型。全局覆盖优先于这里的默认值；候选等级需服务商支持。
+      </p>
+      <SettingHelp>
+        <p className="n-config-note">
+          声明写入 Codex
+          模型目录，用于生成可选等级。不确定时请留空，沿用目录原始元数据。上下文窗口单位为
+          tokens，填写更大数值不会扩展模型实际能力，也不修改自动压缩阈值。
+        </p>
+      </SettingHelp>
+      {changed && (
+        <button type="button" className="n-inline-action" disabled={disabled} onClick={onReset}>
+          撤销此项修改
+        </button>
       )}
       {error && (
         <p className="n-config-note n-error-text" role="alert">

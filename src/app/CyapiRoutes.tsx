@@ -3,6 +3,7 @@ import { Gauge, LoaderCircle, RefreshCw } from 'lucide-react';
 import { nativeAvailable } from '../lib/api/native';
 import { probeCyapiRoute, sameRoute } from '../lib/api/cyapi';
 import type { CyapiMeasurement, CyapiRoutesView } from '../lib/api/cyapi';
+import { SettingHelp } from './ModelSettingField';
 
 interface Props {
   view: CyapiRoutesView;
@@ -11,8 +12,17 @@ interface Props {
   value: string;
   onChange: (value: string) => void;
   onReload: () => void;
+  embedded?: boolean;
 }
-export function CyapiRoutes({ view, loading, disabled, value, onChange, onReload }: Props) {
+export function CyapiRoutes({
+  view,
+  loading,
+  disabled,
+  value,
+  onChange,
+  onReload,
+  embedded,
+}: Props) {
   const [results, setResults] = useState<Record<string, CyapiMeasurement>>({});
   const [running, setRunning] = useState(false);
   const [pending, setPending] = useState<string[]>([]);
@@ -60,11 +70,14 @@ export function CyapiRoutes({ view, loading, disabled, value, onChange, onReload
   const selected = view.manifest.routes.some((route) => sameRoute(value, route.baseUrl));
   const completed = Object.keys(results).length;
   return (
-    <section className="n-cyapi-routes" aria-label="CYAPI 专属线路">
+    <section
+      className={`n-cyapi-routes${embedded ? ' n-cyapi-routes-embedded' : ''}`}
+      aria-label="CYAPI 专属线路"
+    >
       <div className="n-cyapi-heading">
         <div>
-          <h3>CYAPI 专属线路</h3>
-          <p>默认使用官方域名。测速后由你选择，保存配置后生效。</p>
+          {!embedded && <h3>CYAPI 专属线路</h3>}
+          <p>选择线路，保存后生效。</p>
         </div>
         <div className="n-cyapi-actions">
           <button
@@ -111,7 +124,7 @@ export function CyapiRoutes({ view, loading, disabled, value, onChange, onReload
                 name="cyapi-route"
                 value={route.id}
                 checked={active}
-                disabled={disabled || loading}
+                disabled={disabled}
                 onChange={() => onChange(route.baseUrl)}
               />
               <span className="n-cyapi-route-info">
@@ -146,20 +159,28 @@ export function CyapiRoutes({ view, loading, disabled, value, onChange, onReload
       </div>
       <p className="n-cyapi-status" role="status" aria-live="polite">
         {loading
-          ? '正在获取服务器线路清单…'
+          ? view.source === 'default'
+            ? '正在获取服务器线路清单…'
+            : '已载入本地线路清单，正在后台更新…'
           : running
             ? `已完成 ${completed} / ${view.manifest.routes.length} 条线路`
             : completed
               ? `测速完成，${successful.length} / ${view.manifest.routes.length} 条可连接（每条 3 次取平均）。请选择要使用的线路。`
-              : view.message || '备用线路由 CYAPI 服务器维护。'}
+              : view.message ||
+                (view.source === 'server'
+                  ? '线路已更新，本地缓存已替换。'
+                  : '已载入本地线路缓存。')}
       </p>
       {!selected && (
         <p className="n-config-note">当前地址不在最新线路清单中。选择其他线路前将保留当前地址。</p>
       )}
-      <p className="n-config-note">
-        测速不发送 API Key，不调用模型；每条线路发送 3 次不带密钥的请求并取平均延迟。
-        {!nativeAvailable && '请在桌面版测速。'}
-      </p>
+      <SettingHelp>
+        <p className="n-config-note">
+          测速不发送 API Key，不调用模型；每条线路发送 3 次不带密钥的请求并取平均延迟。
+          {!nativeAvailable && '请在桌面版测速。'}
+          线路优先读取本地缓存，启动时自动更新。
+        </p>
+      </SettingHelp>
     </section>
   );
 }

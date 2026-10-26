@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2,
   CircleHelp,
@@ -11,14 +11,8 @@ import {
 } from 'lucide-react';
 import { nativeAvailable, nativeCall } from '../lib/api/native';
 import type { ClaudeConfiguration } from '../lib/api/native';
-import {
-  CYAPI_DEFAULT_URL,
-  cachedCyapiRoutes,
-  defaultCyapiRoutes,
-  readCyapiRoutes,
-  sameRoute,
-} from '../lib/api/cyapi';
-import type { CyapiRoutesView } from '../lib/api/cyapi';
+import { CYAPI_DEFAULT_URL, sameRoute } from '../lib/api/cyapi';
+import { useCyapiRoutes } from './useCyapiRoutes';
 import { ModelPicker } from './ModelPicker';
 import { ModelReasoningSettings } from './ModelReasoningSettings';
 import { changeModelEffort, claudeModelEffort, selectedEffortChanges } from '../lib/model-settings';
@@ -62,16 +56,15 @@ export function ClaudeSettings() {
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState<{ text: string; error?: boolean }>();
   const [mode, setMode] = useState<'cyapi' | 'custom'>('cyapi');
-  const [routes, setRoutes] = useState<CyapiRoutesView>(
-    () => cachedCyapiRoutes() ?? defaultCyapiRoutes,
-  );
-  const [loadingRoutes, setLoadingRoutes] = useState(() => !cachedCyapiRoutes());
+  const { view: routes, loading: loadingRoutes, refresh: loadRoutes } = useCyapiRoutes();
+  const modeTouched = useRef(false);
 
   function apply(next: ClaudeConfiguration) {
     const { authToken: savedToken, ...metadata } = next;
     setView(metadata);
     const url = next.baseUrl ? anthropicBase(next.baseUrl) : anthropicBase(CYAPI_DEFAULT_URL);
     setBaseUrl(url);
+    modeTouched.current = false;
     setToken(savedToken ?? '');
     setModel(next.model);
     setModels(next.models ?? []);
@@ -86,23 +79,15 @@ export function ClaudeSettings() {
     );
   }
 
-  async function loadRoutes(force = false) {
-    setLoadingRoutes(true);
-    try {
-      setRoutes(await readCyapiRoutes({ force }));
-    } catch {
-      setRoutes({
-        ...defaultCyapiRoutes,
-        message: '暂时无法更新线路，可使用官方默认线路或稍后重试。',
-      });
-    } finally {
-      setLoadingRoutes(false);
-    }
-  }
-
   useEffect(() => {
-    if (!cachedCyapiRoutes()) void loadRoutes();
-  }, []);
+    if (!modeTouched.current && view) {
+      setMode(
+        routes.manifest.routes.some((route) => sameRoute(anthropicBase(route.baseUrl), baseUrl))
+          ? 'cyapi'
+          : 'custom',
+      );
+    }
+  }, [routes, baseUrl, view]);
 
   useEffect(() => {
     let active = true;
@@ -223,82 +208,99 @@ export function ClaudeSettings() {
       )}
       <form onSubmit={save} autoComplete="off">
         <fieldset disabled={busy || !view} className="n-codex-fields">
-          <div className="n-cyapi-mode" role="group" aria-label="API 服务类型">
-            <button
-              type="button"
-              aria-pressed={mode === 'cyapi'}
-              onClick={() => {
-                setMode('cyapi');
-                if (!selectedRoute)
-                  setBaseUrl(routeOptions[0]?.base ?? anthropicBase(CYAPI_DEFAULT_URL));
-              }}
-            >
-              CYAPI 专属
-            </button>
-            <button
-              type="button"
-              aria-pressed={mode === 'custom'}
-              onClick={() => {
-                setMode('custom');
-              }}
-            >
-              自定义服务
-            </button>
-          </div>
-          {mode === 'cyapi' ? (
-            <div className="n-config-field">
-              <div className="n-config-label-row">
-                <label htmlFor="claude-route">线路</label>
+          <section className="n-api-section n-api-route" aria-label="线路">
+            <div className="n-api-section-heading">
+              <h3>线路</h3>
+              <div className="n-cyapi-mode" role="group" aria-label="API 服务类型">
                 <button
                   type="button"
-                  className="n-inline-action"
-                  disabled={loadingRoutes}
-                  onClick={() => void loadRoutes(true)}
+                  aria-pressed={mode === 'cyapi'}
+                  onClick={() => {
+                    modeTouched.current = true;
+                    setMode('cyapi');
+                    if (!selectedRoute)
+                      setBaseUrl(routeOptions[0]?.base ?? anthropicBase(CYAPI_DEFAULT_URL));
+                  }}
                 >
-                  <RefreshCw size={12} className={loadingRoutes ? 'n-spin' : ''} />
-                  {loadingRoutes ? '正在更新' : '更新线路'}
+                  CYAPI 专属
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={mode === 'custom'}
+                  onClick={() => {
+                    modeTouched.current = true;
+                    setMode('custom');
+                  }}
+                >
+                  自定义服务
                 </button>
               </div>
-              <select
-                id="claude-route"
-                value={selectedRoute?.id ?? ''}
-                onChange={(event) => {
-                  const route = routeOptions.find((item) => item.id === event.target.value);
-                  if (route) {
-                    setBaseUrl(route.base);
-                  }
-                }}
-              >
-                {!selectedRoute && <option value="">自定义地址</option>}
-                {routeOptions.map((route) => (
-                  <option key={route.id} value={route.id}>
-                    {route.name}
-                  </option>
-                ))}
-              </select>
-              <p className="n-config-note">
-                <code>{baseUrl || anthropicBase(CYAPI_DEFAULT_URL)}</code>
-                {loadingRoutes ? ' · 正在更新线路' : ''}
-              </p>
             </div>
-          ) : (
-            <div className="n-config-field">
-              <label htmlFor="claude-api-url">API 地址</label>
-              <input
-                id="claude-api-url"
-                type="url"
-                required
-                value={baseUrl}
-                onChange={(event) => {
-                  setBaseUrl(event.target.value);
-                }}
-                placeholder="https://api.example.com"
-                spellCheck={false}
-              />
+            {mode === 'cyapi' ? (
+              <div className="n-config-field">
+                <div className="n-config-label-row">
+                  <label htmlFor="claude-route">线路</label>
+                  <button
+                    type="button"
+                    className="n-inline-action"
+                    disabled={loadingRoutes}
+                    onClick={() => void loadRoutes()}
+                  >
+                    <RefreshCw size={12} className={loadingRoutes ? 'n-spin' : ''} />
+                    {loadingRoutes ? '正在更新' : '更新线路'}
+                  </button>
+                </div>
+                <select
+                  id="claude-route"
+                  value={selectedRoute?.id ?? ''}
+                  onChange={(event) => {
+                    const route = routeOptions.find((item) => item.id === event.target.value);
+                    if (route) {
+                      modeTouched.current = true;
+                      setBaseUrl(route.base);
+                    }
+                  }}
+                >
+                  {!selectedRoute && <option value="">自定义地址</option>}
+                  {routeOptions.map((route) => (
+                    <option key={route.id} value={route.id}>
+                      {route.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="n-config-note">
+                  <code>{baseUrl || anthropicBase(CYAPI_DEFAULT_URL)}</code>
+                  {loadingRoutes ? ' · 正在更新线路' : ''}
+                </p>
+                {routes.message && (
+                  <p className="n-config-note" role="status">
+                    {routes.message}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="n-config-field">
+                <label htmlFor="claude-api-url">API 地址</label>
+                <input
+                  id="claude-api-url"
+                  type="url"
+                  required
+                  value={baseUrl}
+                  onChange={(event) => {
+                    modeTouched.current = true;
+                    setBaseUrl(event.target.value);
+                  }}
+                  placeholder="https://api.example.com"
+                  spellCheck={false}
+                />
+              </div>
+            )}
+          </section>
+          <div className="n-config-field n-api-section">
+            <div className="n-config-label-row">
+              <label htmlFor="claude-auth-token">AUTH_TOKEN</label>
+              <span className="n-api-section-hint">仅保存在本机</span>
             </div>
-          )}
-          <div className="n-config-field">
-            <label htmlFor="claude-auth-token">AUTH_TOKEN</label>
             <div className="n-secret-input">
               <input
                 id="claude-auth-token"
@@ -330,91 +332,110 @@ export function ClaudeSettings() {
               disabled={busy || !view}
             />
           )}
-          {(view?.effortOverrides?.environment || view?.effortOverrides?.global) && (
-            <div className="n-model-override" role="status">
-              <strong>检测到统一推理等级设置</strong>
-              {view.effortOverrides.environment && (
+          <section className="n-api-section n-api-models" aria-label="模型">
+            {(view?.effortOverrides?.environment || view?.effortOverrides?.global) && (
+              <div className="n-model-override" role="status">
+                <strong>检测到统一推理等级设置</strong>
+                {view.effortOverrides.environment && (
+                  <p>
+                    <code>env.CLAUDE_CODE_EFFORT_LEVEL = {view.effortOverrides.environment}</code>
+                    （会覆盖逐模型设置）
+                  </p>
+                )}
+                {view.effortOverrides.global && (
+                  <p>
+                    <code>effortLevel = {view.effortOverrides.global}</code>（适用模型的全局回退值）
+                  </p>
+                )}
                 <p>
-                  <code>env.CLAUDE_CODE_EFFORT_LEVEL = {view.effortOverrides.environment}</code>
-                  （会覆盖逐模型设置）
+                  默认保留这两项。切换为逐模型配置后，保存时将删除本文件中的上述设置，未单独设置的模型回到其他配置或工具默认；不会自动复制统一等级。
                 </p>
-              )}
-              {view.effortOverrides.global && (
-                <p>
-                  <code>effortLevel = {view.effortOverrides.global}</code>（适用模型的全局回退值）
-                </p>
-              )}
-              <p>
-                默认保留这两项。切换为逐模型配置后，保存时将删除本文件中的上述设置，未单独设置的模型回到其他配置或工具默认；不会自动复制统一等级。
-              </p>
-              <button
-                type="button"
-                className="n-button"
-                disabled={busy || !view}
-                aria-pressed={clearEffortOverrides}
-                onClick={() => setClearEffortOverrides(!clearEffortOverrides)}
-              >
-                {clearEffortOverrides ? '撤销切换，保留统一设置' : '切换为逐模型配置'}
-              </button>
-              {clearEffortOverrides && (
-                <p>待保存：将移除上述统一设置。Shell 环境变量或项目配置仍可能覆盖本文件。</p>
-              )}
-            </div>
-          )}
-          <ModelPicker
-            id="claude-model"
-            value={model}
-            onChange={setModel}
-            selectedModels={models}
-            onModelsChange={setModels}
-            baseUrl={baseUrl}
-            apiKey={token}
-            api="anthropic"
-            disabled={busy || !view}
-            placeholder="输入完整模型 ID；默认模型可选择由 Claude Code 决定"
-            renderModelSettings={(id, index) => {
-              const original = claudeModelEffort(
-                id,
-                view?.modelEfforts ?? {},
-                view?.modelEffortKeys,
-              );
-              return (
-                <ModelReasoningSettings
-                  id={`claude-effort-${index}`}
-                  model={id}
-                  original={original}
-                  value={Object.hasOwn(effortChanges, id) ? effortChanges[id] : original}
-                  onChange={(value) =>
-                    setEffortChanges((changes) => changeModelEffort(changes, id, value, original))
-                  }
-                  api="anthropic"
+                <button
+                  type="button"
+                  className="n-button"
                   disabled={busy || !view}
-                />
-              );
-            }}
-          />
-          <ContextWindowSettings
-            id="claude-context"
-            scope="Claude Code 全局"
-            original={view?.contextWindow}
-            draft={contextDraft}
-            onChange={(value) =>
-              setContextDraft(value === contextWindowText(view?.contextWindow) ? undefined : value)
-            }
-            onReset={() => setContextDraft(undefined)}
-            disabled={busy || !view}
-          >
-            <p className="n-config-note">
-              高级覆盖：写入
-              settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS，不是逐模型设置，也不保证对当前 ID
-              生效。请重新启动 Claude Code 并新建会话核对；Shell 环境和项目配置可能覆盖本文件。
-            </p>
-            <p className="n-config-note">
-              通常仅未识别、不以 claude- 开头且无 [1m] 的自定义 ID 可直接生效。已识别模型或裸
-              claude- ID 还需 DISABLE_COMPACT（会关闭全部压缩）；未识别的 [1m] ID 还涉及
-              CLAUDE_CODE_DISABLE_1M_CONTEXT。工具箱不会自动修改这些开关、模型 ID 或压缩阈值。
-            </p>
-          </ContextWindowSettings>
+                  aria-pressed={clearEffortOverrides}
+                  onClick={() => setClearEffortOverrides(!clearEffortOverrides)}
+                >
+                  {clearEffortOverrides ? '撤销切换，保留统一设置' : '切换为逐模型配置'}
+                </button>
+                {clearEffortOverrides && (
+                  <p>待保存：将移除上述统一设置。Shell 环境变量或项目配置仍可能覆盖本文件。</p>
+                )}
+              </div>
+            )}
+            <ModelPicker
+              id="claude-model"
+              value={model}
+              onChange={setModel}
+              selectedModels={models}
+              onModelsChange={setModels}
+              baseUrl={baseUrl}
+              apiKey={token}
+              api="anthropic"
+              disabled={busy || !view}
+              placeholder="输入完整模型 ID；默认模型可选择由 Claude Code 决定"
+              renderModelSummary={(id) => {
+                const original = claudeModelEffort(
+                  id,
+                  view?.modelEfforts ?? {},
+                  view?.modelEffortKeys,
+                );
+                const value = Object.hasOwn(effortChanges, id) ? effortChanges[id] : original;
+                return (
+                  <>
+                    {value ? `默认推理 ${value}` : '推理不覆盖'}
+                    {value !== original && <span className="n-model-pending">待保存</span>}
+                  </>
+                );
+              }}
+              renderModelSettings={(id, index) => {
+                const original = claudeModelEffort(
+                  id,
+                  view?.modelEfforts ?? {},
+                  view?.modelEffortKeys,
+                );
+                return (
+                  <ModelReasoningSettings
+                    inline
+                    id={`claude-effort-${index}`}
+                    model={id}
+                    original={original}
+                    value={Object.hasOwn(effortChanges, id) ? effortChanges[id] : original}
+                    onChange={(value) =>
+                      setEffortChanges((changes) => changeModelEffort(changes, id, value, original))
+                    }
+                    api="anthropic"
+                    disabled={busy || !view}
+                  />
+                );
+              }}
+            />
+            <ContextWindowSettings
+              id="claude-context"
+              scope="Claude Code 全局"
+              original={view?.contextWindow}
+              draft={contextDraft}
+              onChange={(value) =>
+                setContextDraft(
+                  value === contextWindowText(view?.contextWindow) ? undefined : value,
+                )
+              }
+              onReset={() => setContextDraft(undefined)}
+              disabled={busy || !view}
+            >
+              <p className="n-config-note">
+                高级覆盖：写入
+                settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS，不是逐模型设置，也不保证对当前 ID
+                生效。请重新启动 Claude Code 并新建会话核对；Shell 环境和项目配置可能覆盖本文件。
+              </p>
+              <p className="n-config-note">
+                通常仅未识别、不以 claude- 开头且无 [1m] 的自定义 ID 可直接生效。已识别模型或裸
+                claude- ID 还需 DISABLE_COMPACT（会关闭全部压缩）；未识别的 [1m] ID 还涉及
+                CLAUDE_CODE_DISABLE_1M_CONTEXT。工具箱不会自动修改这些开关、模型 ID 或压缩阈值。
+              </p>
+            </ContextWindowSettings>
+          </section>
           {view?.apiKeyConfigured && (
             <p className="n-config-note">
               settings.json 里还设置了 ANTHROPIC_API_KEY；如果请求鉴权异常，请只保留 AUTH_TOKEN 或

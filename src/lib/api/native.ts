@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { CodexSaveConflict, codexSaveConflictMessage } from '../codex-save';
 import type { IntegrationGuide, SoftwareCompatibility } from '../../../shared/integration-guide';
 export const SERVER_URL = import.meta.env.VITE_CYAPI_SERVER_URL || 'https://api.cyapi.cyou';
 export type ConfigValue = string | number | boolean | null;
@@ -137,6 +138,8 @@ export interface CodexConfiguration {
   revision: string;
   /** Tracks the settings edited here; revision still protects full-file restores. */
   saveRevision?: string;
+  /** Allows field-wise rebase only while protected provider/auth settings match. */
+  rebaseGuard?: string;
   provider: string;
   baseUrl: string;
   model: string;
@@ -170,6 +173,9 @@ export interface ClaudeConfiguration {
   canRestore: boolean;
 }
 export interface OpenCodeConfiguration {
+  modelReasoningLevels?: Record<string, unknown>;
+  modelReasoningLevelConflicts?: string[];
+  reasoningLevelsEditable?: boolean;
   modelContexts?: Record<string, unknown>;
   modelContextConflicts?: string[];
   modelEfforts?: Record<string, string>;
@@ -415,6 +421,8 @@ export async function nativeCall<T>(
   try {
     return await invoke<T>('toolbox', { request: { action, ...options, operationId } });
   } catch (error) {
+    const conflict = codexSaveConflictMessage(action, String(error));
+    if (conflict) throw new CodexSaveConflict(conflict);
     if (!quiet) {
       window.dispatchEvent(
         new CustomEvent('toolbox-operation-failed', { detail: { operationId } }),

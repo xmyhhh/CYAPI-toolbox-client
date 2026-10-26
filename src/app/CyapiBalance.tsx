@@ -58,7 +58,7 @@ export function CyapiBalance({ baseUrl, apiKey, disabled }: Props) {
       <div className="n-cyapi-balance-heading">
         <h3>
           <Wallet size={16} aria-hidden="true" />
-          余额与额度
+          余额
         </h3>
         <button
           type="button"

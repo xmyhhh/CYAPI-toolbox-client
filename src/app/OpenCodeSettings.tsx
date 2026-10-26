@@ -17,20 +17,18 @@ import {
   modelEffort,
   selectedEffortChanges,
   selectedContextChanges,
+  selectedReasoningLevelChanges,
+  reasoningLevelsText,
 } from '../lib/model-settings';
 import { ContextWindowSettings } from './ContextWindowSettings';
-import {
-  CYAPI_DEFAULT_URL,
-  cachedCyapiRoutes,
-  defaultCyapiRoutes,
-  readCyapiRoutes,
-  sameRoute,
-} from '../lib/api/cyapi';
-import type { CyapiRoutesView } from '../lib/api/cyapi';
+import { CYAPI_DEFAULT_URL, sameRoute } from '../lib/api/cyapi';
+import { useCyapiRoutes } from './useCyapiRoutes';
 import { CyapiRoutes } from './CyapiRoutes';
 import { CyapiBalance } from './CyapiBalance';
 import { ModelPicker } from './ModelPicker';
 import { ModelReasoningSettings } from './ModelReasoningSettings';
+import { OpenCodeReasoningLevels } from './OpenCodeReasoningLevels';
+import { SettingHelp } from './ModelSettingField';
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const preview: OpenCodeConfiguration = {
@@ -57,15 +55,12 @@ export function OpenCodeSettings() {
   const [models, setModels] = useState<string[]>([]);
   const [effortChanges, setEffortChanges] = useState<Record<string, string>>({});
   const [contextChanges, setContextChanges] = useState<Record<string, string>>({});
+  const [levelChanges, setLevelChanges] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState<{ text: string; error?: boolean }>();
   const [mode, setMode] = useState<'cyapi' | 'custom'>('cyapi');
-  const [routes, setRoutes] = useState<CyapiRoutesView>(
-    () => cachedCyapiRoutes() ?? defaultCyapiRoutes,
-  );
-  const [loadingRoutes, setLoadingRoutes] = useState(() => !cachedCyapiRoutes());
+  const { view: routes, loading: loadingRoutes, refresh: loadRoutes } = useCyapiRoutes();
   const modeTouched = useRef(false);
-  const routeLoad = useRef(0);
 
   function apply(next: OpenCodeConfiguration) {
     const { apiKey: savedKey, ...metadata } = next;
@@ -80,30 +75,10 @@ export function OpenCodeSettings() {
     setModels(next.models ?? []);
     setEffortChanges({});
     setContextChanges({});
+    setLevelChanges({});
     setApiKey(savedKey ?? '');
     setShowKey(false);
   }
-
-  async function loadRoutes(force = false) {
-    const current = ++routeLoad.current;
-    setLoadingRoutes(true);
-    try {
-      const next = await readCyapiRoutes({ force });
-      if (routeLoad.current === current) setRoutes(next);
-    } catch {
-      if (routeLoad.current === current)
-        setRoutes({ ...defaultCyapiRoutes, message: '暂时无法更新线路，请稍后重试。' });
-    } finally {
-      if (routeLoad.current === current) setLoadingRoutes(false);
-    }
-  }
-
-  useEffect(() => {
-    if (!cachedCyapiRoutes()) void loadRoutes();
-    return () => {
-      routeLoad.current++;
-    };
-  }, []);
 
   useEffect(() => {
     if (!modeTouched.current && view) {
@@ -163,6 +138,7 @@ export function OpenCodeSettings() {
             models,
             modelEffortChanges: selectedEffortChanges(effortChanges, models, model),
             modelContextChanges: selectedContextChanges(contextChanges, models, model),
+            modelReasoningLevelChanges: selectedReasoningLevelChanges(levelChanges, models, model),
             revision: view.revision,
           },
         }),
@@ -231,61 +207,70 @@ export function OpenCodeSettings() {
       )}
       <form onSubmit={save} autoComplete="off">
         <fieldset disabled={busy || !view} className="n-codex-fields">
-          <div className="n-cyapi-mode" role="group" aria-label="API 服务类型">
-            <button
-              type="button"
-              aria-pressed={mode === 'cyapi'}
-              onClick={() => {
-                modeTouched.current = true;
-                setMode('cyapi');
-                if (!routes.manifest.routes.some((route) => sameRoute(baseUrl, route.baseUrl)))
-                  setBaseUrl(CYAPI_DEFAULT_URL);
-              }}
-            >
-              CYAPI 专属
-            </button>
-            <button
-              type="button"
-              aria-pressed={mode === 'custom'}
-              onClick={() => {
-                modeTouched.current = true;
-                setMode('custom');
-              }}
-            >
-              自定义服务
-            </button>
-          </div>
-          {mode === 'cyapi' ? (
-            <CyapiRoutes
-              view={routes}
-              loading={loadingRoutes}
-              disabled={busy || !view}
-              value={baseUrl}
-              onChange={(url) => {
-                modeTouched.current = true;
-                setBaseUrl(url);
-              }}
-              onReload={() => void loadRoutes(true)}
-            />
-          ) : (
-            <div className="n-config-field">
-              <label htmlFor="opencode-api-url">API 地址</label>
-              <input
-                id="opencode-api-url"
-                type="url"
-                required
-                value={baseUrl}
-                onChange={(event) => {
-                  modeTouched.current = true;
-                  setBaseUrl(event.target.value);
-                }}
-                placeholder="https://api.example.com/v1"
-                spellCheck={false}
-              />
+          <section className="n-api-section n-api-route" aria-label="线路">
+            <div className="n-api-section-heading">
+              <h3>线路</h3>
+              <div className="n-cyapi-mode" role="group" aria-label="API 服务类型">
+                <button
+                  type="button"
+                  aria-pressed={mode === 'cyapi'}
+                  onClick={() => {
+                    modeTouched.current = true;
+                    setMode('cyapi');
+                    if (!routes.manifest.routes.some((route) => sameRoute(baseUrl, route.baseUrl)))
+                      setBaseUrl(CYAPI_DEFAULT_URL);
+                  }}
+                >
+                  CYAPI 专属
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={mode === 'custom'}
+                  onClick={() => {
+                    modeTouched.current = true;
+                    setMode('custom');
+                  }}
+                >
+                  自定义服务
+                </button>
+              </div>
             </div>
-          )}
-          <div className="n-config-field">
-            <label htmlFor="opencode-api-key">API Key</label>
+            {mode === 'cyapi' ? (
+              <CyapiRoutes
+                embedded
+                view={routes}
+                loading={loadingRoutes}
+                disabled={busy || !view}
+                value={baseUrl}
+                onChange={(url) => {
+                  modeTouched.current = true;
+                  setBaseUrl(url);
+                }}
+                onReload={() => void loadRoutes()}
+              />
+            ) : (
+              <div className="n-config-field">
+                <label htmlFor="opencode-api-url">API 地址</label>
+                <input
+                  id="opencode-api-url"
+                  type="url"
+                  required
+                  value={baseUrl}
+                  onChange={(event) => {
+                    modeTouched.current = true;
+                    setBaseUrl(event.target.value);
+                  }}
+                  placeholder="https://api.example.com/v1"
+                  spellCheck={false}
+                />
+              </div>
+            )}
+          </section>
+          <div className="n-config-field n-api-section">
+            <div className="n-config-label-row">
+              <label htmlFor="opencode-api-key">API Key</label>
+              <span className="n-api-section-hint">仅保存在本机</span>
+            </div>
             <div className="n-secret-input">
               <input
                 id="opencode-api-key"
@@ -313,106 +298,165 @@ export function OpenCodeSettings() {
           {mode === 'cyapi' && (
             <CyapiBalance baseUrl={baseUrl} apiKey={apiKey} disabled={busy || !view} />
           )}
-          <ModelPicker
-            id="opencode-model"
-            value={model}
-            onChange={setModel}
-            selectedModels={models}
-            onModelsChange={setModels}
-            baseUrl={baseUrl}
-            apiKey={apiKey}
-            api="openai"
-            disabled={busy || !view}
-            required
-            placeholder="填写服务商提供的完整模型 ID"
-            renderModelSettings={(id, index) => {
-              const original = modelEffort(id, view?.modelEfforts ?? {});
-              const conflict = view?.modelEffortConflicts?.includes(id) ?? false;
-              const contextOriginal = Object.hasOwn(view?.modelContexts ?? {}, id)
-                ? view?.modelContexts?.[id]
-                : null;
-              const contextConflict = view?.modelContextConflicts?.includes(id) ?? false;
-              return (
-                <div>
-                  <ModelReasoningSettings
-                    id={`opencode-effort-${index}`}
-                    model={id}
-                    original={original}
-                    value={Object.hasOwn(effortChanges, id) ? effortChanges[id] : original}
-                    conflict={conflict}
-                    changed={Object.hasOwn(effortChanges, id)}
-                    onChange={(value) =>
-                      setEffortChanges((changes) =>
-                        changeModelEffort(changes, id, value, original, conflict),
-                      )
-                    }
-                    onReset={() =>
-                      setEffortChanges((changes) => {
-                        const next = { ...changes };
-                        delete next[id];
-                        return next;
-                      })
-                    }
-                    api="openai"
-                    disabled={busy || !view}
-                  />
-                  <ContextWindowSettings
-                    id={`opencode-context-${index}`}
-                    scope={`${id} 的`}
-                    original={contextOriginal}
-                    draft={Object.hasOwn(contextChanges, id) ? contextChanges[id] : undefined}
-                    conflict={contextConflict}
-                    onChange={(value) =>
-                      setContextChanges((changes) =>
-                        changeModelEffort(
-                          changes,
-                          id,
-                          value,
-                          contextWindowText(contextOriginal),
-                          contextConflict,
-                        ),
-                      )
-                    }
-                    onReset={() =>
-                      setContextChanges((changes) => {
-                        const next = { ...changes };
-                        delete next[id];
-                        return next;
-                      })
-                    }
-                    disabled={busy || !view}
-                  />
-                </div>
-              );
-            }}
-          />
+          <section className="n-api-section n-api-models" aria-label="模型">
+            <ModelPicker
+              id="opencode-model"
+              value={model}
+              onChange={setModel}
+              selectedModels={models}
+              onModelsChange={setModels}
+              baseUrl={baseUrl}
+              apiKey={apiKey}
+              api="openai"
+              disabled={busy || !view}
+              required
+              placeholder="填写服务商提供的完整模型 ID"
+              renderModelSummary={(id) => {
+                const effort = Object.hasOwn(effortChanges, id)
+                  ? effortChanges[id]
+                  : modelEffort(id, view?.modelEfforts ?? {});
+                const context = Object.hasOwn(contextChanges, id)
+                  ? contextChanges[id]
+                  : contextWindowText(view?.modelContexts?.[id]);
+                const levels = Object.hasOwn(levelChanges, id)
+                  ? levelChanges[id]
+                  : reasoningLevelsText(view?.modelReasoningLevels?.[id]);
+                const changed = [effortChanges, contextChanges, levelChanges].some((changes) =>
+                  Object.hasOwn(changes, id),
+                );
+                const conflict = [
+                  view?.modelEffortConflicts,
+                  view?.modelContextConflicts,
+                  view?.modelReasoningLevelConflicts,
+                ].some((ids) => ids?.includes(id));
+                return (
+                  <>
+                    {effort ? `推理 ${effort}` : '推理不覆盖'} ·{' '}
+                    {levels ? `${levels.split(',').length} 个可选等级` : '等级沿用目录'} ·{' '}
+                    {context ? `${context} tokens` : '上下文沿用原值'}
+                    {conflict ? ' · 存在别名差异' : ''}
+                    {changed && <span className="n-model-pending">待保存</span>}
+                  </>
+                );
+              }}
+              renderModelSettings={(id, index) => {
+                const original = modelEffort(id, view?.modelEfforts ?? {});
+                const conflict = view?.modelEffortConflicts?.includes(id) ?? false;
+                const contextOriginal = Object.hasOwn(view?.modelContexts ?? {}, id)
+                  ? view?.modelContexts?.[id]
+                  : null;
+                const contextConflict = view?.modelContextConflicts?.includes(id) ?? false;
+                return (
+                  <div className="n-opencode-model-editor">
+                    <div className="n-model-editor-grid">
+                      <ModelReasoningSettings
+                        inline
+                        id={`opencode-effort-${index}`}
+                        model={id}
+                        original={original}
+                        value={Object.hasOwn(effortChanges, id) ? effortChanges[id] : original}
+                        conflict={conflict}
+                        changed={Object.hasOwn(effortChanges, id)}
+                        onChange={(value) =>
+                          setEffortChanges((changes) =>
+                            changeModelEffort(changes, id, value, original, conflict),
+                          )
+                        }
+                        onReset={() =>
+                          setEffortChanges((changes) => {
+                            const next = { ...changes };
+                            delete next[id];
+                            return next;
+                          })
+                        }
+                        api="openai"
+                        disabled={busy || !view}
+                      />
+                      <ContextWindowSettings
+                        inline
+                        id={`opencode-context-${index}`}
+                        scope={`${id} 的`}
+                        original={contextOriginal}
+                        draft={Object.hasOwn(contextChanges, id) ? contextChanges[id] : undefined}
+                        conflict={contextConflict}
+                        onChange={(value) =>
+                          setContextChanges((changes) =>
+                            changeModelEffort(
+                              changes,
+                              id,
+                              value,
+                              contextWindowText(contextOriginal),
+                              contextConflict,
+                            ),
+                          )
+                        }
+                        onReset={() =>
+                          setContextChanges((changes) => {
+                            const next = { ...changes };
+                            delete next[id];
+                            return next;
+                          })
+                        }
+                        disabled={busy || !view}
+                      />
+                    </div>
+                    <OpenCodeReasoningLevels
+                      inline
+                      id={`opencode-levels-${index}`}
+                      model={id}
+                      original={view?.modelReasoningLevels?.[id]}
+                      draft={Object.hasOwn(levelChanges, id) ? levelChanges[id] : undefined}
+                      conflict={view?.modelReasoningLevelConflicts?.includes(id) ?? false}
+                      editable={view?.reasoningLevelsEditable ?? false}
+                      disabled={busy || !view}
+                      onChange={(text) =>
+                        setLevelChanges((changes) => ({ ...changes, [id]: text }))
+                      }
+                      onReset={() =>
+                        setLevelChanges((changes) => {
+                          const next = { ...changes };
+                          delete next[id];
+                          return next;
+                        })
+                      }
+                    />
+                  </div>
+                );
+              }}
+            />
+          </section>
         </fieldset>
-        <p className="n-config-note">
-          OpenCode 使用 OpenAI 兼容接口，API 地址通常以 /v1 结尾。保存时保留 JSONC
-          注释和其他配置，API Key 仅保存在本机。仅修改明确编辑的模型等级和上下文窗口；OpenCode V2
-          自动重载配置，必要时使用 /reload。
-        </p>
-        <div className="n-codex-actions">
-          {view?.canRestore && (
+        <SettingHelp>
+          <p className="n-config-note">
+            OpenCode 使用 OpenAI 兼容接口，API 地址通常以 /v1 结尾。保存时保留 JSONC
+            注释和其他配置，API Key 仅保存在本机。仅修改明确编辑的模型等级和上下文窗口；OpenCode V2
+            自动重载配置，必要时使用 /reload。
+          </p>
+        </SettingHelp>
+        <div className="n-config-savebar">
+          <p className="n-config-note">更改保存后生效 · OpenCode V2 自动重载</p>
+          <div className="n-codex-actions">
+            {view?.canRestore && (
+              <button
+                type="button"
+                className="n-button"
+                disabled={busy || !nativeAvailable}
+                onClick={restore}
+                title="恢复上次保存前的 OpenCode 配置"
+              >
+                <RotateCcw size={14} />
+                恢复上次配置
+              </button>
+            )}
             <button
-              type="button"
-              className="n-button"
-              disabled={busy || !nativeAvailable}
-              onClick={restore}
-              title="恢复上次保存前的 OpenCode 配置"
+              className="n-button n-primary"
+              type="submit"
+              disabled={busy || !nativeAvailable || !view}
             >
-              <RotateCcw size={14} />
-              恢复上次配置
+              {busy ? <LoaderCircle size={15} className="n-spin" /> : <Save size={15} />}
+              保存配置
             </button>
-          )}
-          <button
-            className="n-button n-primary"
-            type="submit"
-            disabled={busy || !nativeAvailable || !view}
-          >
-            {busy ? <LoaderCircle size={15} className="n-spin" /> : <Save size={15} />}
-            保存配置
-          </button>
+          </div>
         </div>
       </form>
       {view && (

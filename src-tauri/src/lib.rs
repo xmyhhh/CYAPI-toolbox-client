@@ -56,6 +56,8 @@ async fn cyapi_routes(
         .data
         .clone();
     tauri::async_runtime::spawn_blocking(move || match action.as_str() {
+        "cache" => serde_json::to_value(cyapi_routes::read_cache(&data))
+            .map_err(|_| "无法读取线路缓存".into()),
         "read" => {
             serde_json::to_value(cyapi_routes::read(&data)).map_err(|_| "无法读取线路清单".into())
         }

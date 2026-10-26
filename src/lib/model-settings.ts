@@ -87,3 +87,41 @@ export function selectedEffortChanges(
   const selected = new Set(configuredModels(models, defaultModel));
   return Object.fromEntries(Object.entries(changes).filter(([id]) => selected.has(id)));
 }
+
+export function reasoningLevelsText(value: unknown): string {
+  if (value == null) return '';
+  return Array.isArray(value) && value.every((level) => typeof level === 'string')
+    ? value.join(', ')
+    : JSON.stringify(value);
+}
+
+/** Explicit capability edits only; a blank field removes the effort declaration. */
+export function selectedReasoningLevelChanges(
+  changes: Record<string, string>,
+  models: string[],
+  defaultModel: string,
+): Record<string, string[] | null> {
+  const selected = new Set(configuredModels(models, defaultModel));
+  return Object.fromEntries(
+    Object.entries(changes)
+      .filter(([id]) => selected.has(id))
+      .map(([id, text]) => {
+        if (!text.trim()) return [id, null];
+        const levels = text.split(',').map((level) => level.trim());
+        if (
+          levels.length > 64 ||
+          new Set(levels).size !== levels.length ||
+          levels.some(
+            (level) =>
+              !level ||
+              new TextEncoder().encode(level).length > 64 ||
+              /[\s\u0000-\u001f\u007f-\u009f]/u.test(level),
+          )
+        )
+          throw new Error(
+            `${id} 的可选思考等级须以英文逗号分隔，最多 64 项，每项不超过 64 字节，不能重复、为空或包含空白和控制字符。`,
+          );
+        return [id, levels];
+      }),
+  );
+}

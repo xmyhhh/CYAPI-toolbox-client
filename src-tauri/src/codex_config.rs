@@ -167,6 +167,61 @@ fn key_in_auth(auth: &Value) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
+// Existing Codex installations can keep their credential on the active provider
+// instead of in auth.json. Never read a token from an inactive provider, and do
+// not copy any credentials into browser storage or the non-editor view.
+fn configured_key_with(
+    doc: &DocumentMut,
+    auth: &Value,
+    read_env: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let provider = setting(doc, "model_provider").unwrap_or("openai");
+    let provider = doc.get("model_providers").and_then(|p| p.get(provider));
+    let text = |key: &str| {
+        provider
+            .and_then(|p| p.get(key))
+            .and_then(Item::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let nonempty = |key: String| {
+        let key = key.trim();
+        (!key.is_empty()).then(|| key.to_string())
+    };
+    let bearer = |header: &str| {
+        let (scheme, token) = header.trim().split_once(char::is_whitespace)?;
+        scheme
+            .eq_ignore_ascii_case("bearer")
+            .then(|| token.trim().to_string())
+            .and_then(nonempty)
+    };
+    text("experimental_bearer_token")
+        .map(str::to_string)
+        .or_else(|| text("env_key").and_then(&read_env).and_then(nonempty))
+        .or_else(|| {
+            ["http_headers", "env_http_headers"]
+                .into_iter()
+                .find_map(|field| {
+                    let headers = provider?.get(field)?.as_table_like()?;
+                    headers.iter().find_map(|(name, value)| {
+                        if !name.eq_ignore_ascii_case("authorization") {
+                            return None;
+                        }
+                        let value = value.as_str()?;
+                        if field == "env_http_headers" {
+                            bearer(&read_env(value)?)
+                        } else {
+                            bearer(value)
+                        }
+                    })
+                })
+        })
+        .or_else(|| key_in_auth(auth).map(str::to_string))
+}
+fn configured_key(doc: &DocumentMut, auth: &Value) -> Option<String> {
+    configured_key_with(doc, auth, |name| std::env::var(name).ok())
+}
+
 // Hash TOML content without comments, key order, or quote/whitespace differences.
 fn semantic_value(value: &toml_edit::Value) -> Value {
     use toml_edit::Value as TomlValue;
@@ -252,10 +307,27 @@ fn save_revision(root: &Path, doc: &DocumentMut, auth: &Value) -> String {
         "activeProvider": provider_settings(provider),
         "toolboxProvider": provider_settings(PROVIDER),
         "authMode": auth.get("auth_mode"), "apiKey": auth.get("OPENAI_API_KEY"),
+        "resolvedApiKey": configured_key(doc, auth),
         "hasLogin": auth.get("tokens").is_some_and(Value::is_object),
         "accountId": auth.get("tokens").and_then(|tokens| tokens.get("account_id")),
     });
     crate::service::hash(&serde_json::to_vec(&content).expect("configuration values serialize"))
+}
+
+// The editor can three-way merge model fields, but must not silently accept
+// concurrent credential/provider changes it cannot fully display. Hash those
+// protected settings separately; never expose the underlying credentials.
+fn rebase_guard(root: &Path, doc: &DocumentMut, auth: &Value) -> String {
+    let mut protected = doc.clone();
+    for key in [
+        "model",
+        "model_reasoning_effort",
+        "model_context_window",
+        "model_catalog_json",
+    ] {
+        protected.remove(key);
+    }
+    save_revision(root, &protected, auth)
 }
 
 pub fn view(root: &Path, data: &Path) -> Result<Value> {
@@ -267,8 +339,9 @@ pub fn view(root: &Path, data: &Path) -> Result<Value> {
 pub fn editor_view(root: &Path, data: &Path) -> Result<Value> {
     let snapshot = Snapshot::read(root)?;
     let mut view = snapshot_view(root, data, &snapshot)?;
+    let doc = parse_config(&snapshot.config)?;
     let auth = parse_auth(&snapshot.auth)?;
-    view["apiKey"] = json!(key_in_auth(&auth).unwrap_or(""));
+    view["apiKey"] = json!(configured_key(&doc, &auth).unwrap_or_default());
     Ok(view)
 }
 
@@ -290,7 +363,8 @@ fn snapshot_view(root: &Path, data: &Path, snapshot: &Snapshot) -> Result<Value>
         } else {
             ""
         });
-    let auth_mode = if key_in_auth(&auth).is_some() {
+    let key_configured = configured_key(&doc, &auth).is_some();
+    let auth_mode = if key_configured {
         "API Key"
     } else if auth.get("tokens").is_some_and(Value::is_object) {
         "ChatGPT 登录"
@@ -304,13 +378,14 @@ fn snapshot_view(root: &Path, data: &Path, snapshot: &Snapshot) -> Result<Value>
     Ok(json!({
         "configPath":root.join("config.toml"), "authPath":root.join("auth.json"),
         "revision":snapshot.revision(), "saveRevision":save_revision(root, &doc, &auth),
+        "rebaseGuard": rebase_guard(root, &doc, &auth),
         "provider":provider,
         "baseUrl":base_url, "model":setting(&doc, "model").unwrap_or(""),
         "reasoningEffort":setting(&doc, "model_reasoning_effort").unwrap_or(""),
         "contextWindow":semantic_item(doc.get("model_context_window")),
         "models":crate::codex_models::selected(root, &doc)?,
         "modelSettings":model_settings(root, &doc)?,
-        "apiKeyConfigured":key_in_auth(&auth).is_some(), "authMode":auth_mode,
+        "apiKeyConfigured":key_configured, "authMode":auth_mode,
         "canRestore":can_restore
     }))
 }
@@ -600,11 +675,10 @@ pub fn save(root: &Path, data: &Path, input: &Input) -> Result<Value> {
     }
     validate_reasoning_effort(&input.reasoning_effort, &doc)?;
     let key = if input.api_key.trim().is_empty() {
-        key_in_auth(&auth).ok_or("请填写 API Key")?
+        configured_key(&doc, &auth).ok_or("请填写 API Key")?
     } else {
-        input.api_key.trim()
-    }
-    .to_string();
+        input.api_key.trim().to_string()
+    };
     if let Some(models) = &input.models {
         let selected = crate::model_selection::models(&input.model, models)?;
         let settings = input.model_settings.as_ref();
@@ -707,6 +781,132 @@ mod tests {
             revision: view["revision"].as_str().unwrap().into(),
             save_revision: view["saveRevision"].as_str().map(str::to_owned),
         }
+    }
+    #[test]
+    fn rebase_guard_only_ignores_mergeable_model_fields_not_credentials_or_routes() {
+        let root = Path::new("codex-home");
+        let doc: DocumentMut = "model = 'sol'\nmodel_provider = 'cyapi-toolbox'\nmodel_reasoning_effort = 'none'\nmodel_catalog_json = 'old.json'\n[model_providers.cyapi-toolbox]\nbase_url = 'https://old.invalid/v1'\n".parse().unwrap();
+        let auth = json!({"auth_mode": "apikey", "OPENAI_API_KEY": "dummy"});
+        let guard = rebase_guard(root, &doc, &auth);
+        let mut models = doc.clone();
+        models["model"] = value("another-model");
+        models["model_catalog_json"] = value("repaired.json");
+        models.remove("model_reasoning_effort");
+        models["model_context_window"] = value(100000);
+        assert_eq!(guard, rebase_guard(root, &models, &auth));
+        models["model_providers"][PROVIDER]["base_url"] = value("https://new.invalid/v1");
+        assert_ne!(guard, rebase_guard(root, &models, &auth));
+        assert_ne!(
+            guard,
+            rebase_guard(
+                root,
+                &doc,
+                &json!({"auth_mode":"apikey", "OPENAI_API_KEY":"changed"})
+            )
+        );
+        let mut auth_mode = doc.clone();
+        auth_mode["forced_login_method"] = value("chatgpt");
+        assert_ne!(guard, rebase_guard(root, &auth_mode, &auth));
+    }
+    #[test]
+    fn provider_credentials_survive_service_restarts_and_blank_saves() {
+        for credential in [
+            "experimental_bearer_token = 'provider-key'\n",
+            "http_headers = { Authorization = 'Bearer provider-key' }\n",
+            "[model_providers.custom.http_headers]\nauthorization = 'bearer provider-key'\n",
+        ] {
+            let (base, root, data) = fixture();
+            let config = format!("model = 'beam-free'\nmodel_provider = 'custom'\n[model_providers.custom]\nbase_url = 'https://example.invalid/v1'\n{credential}");
+            fs::write(root.join("config.toml"), &config).unwrap();
+            // Recreate the service twice to exercise startup reads, not a UI cache.
+            for _ in 0..2 {
+                let mut service =
+                    crate::service::Service::new(data.clone(), base.join("home")).unwrap();
+                let editor = service
+                    .dispatch(serde_json::from_value(json!({"action":"codex-read"})).unwrap())
+                    .unwrap();
+                assert_eq!(editor["apiKey"], "provider-key");
+                assert_eq!(editor["apiKeyConfigured"], true);
+                assert_eq!(editor["authMode"], "API Key");
+                assert!(!view(&root, &data)
+                    .unwrap()
+                    .to_string()
+                    .contains("provider-key"));
+                assert_eq!(
+                    fs::read_to_string(root.join("config.toml")).unwrap(),
+                    config
+                );
+                assert!(!root.join("auth.json").exists());
+            }
+            let mut pending = input(&editor_view(&root, &data).unwrap());
+            pending.api_key.clear();
+            let saved = save(&root, &data, &pending).unwrap();
+            assert_eq!(editor_view(&root, &data).unwrap()["apiKey"], "provider-key");
+            assert_eq!(
+                parse_auth(&Snapshot::read(&root).unwrap().auth).unwrap()["OPENAI_API_KEY"],
+                "provider-key"
+            );
+            restore(&root, &data, saved["revision"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                fs::read_to_string(root.join("config.toml")).unwrap(),
+                config
+            );
+            assert!(!root.join("auth.json").exists());
+            assert_eq!(editor_view(&root, &data).unwrap()["apiKey"], "provider-key");
+            fs::remove_dir_all(base).unwrap();
+        }
+    }
+    #[test]
+    fn provider_key_lookup_handles_environment_headers_and_ignores_inactive_providers() {
+        for (config, expected) in [
+            ("env_key = 'TEST_API_KEY'", "environment-key"),
+            (
+                "env_http_headers = { Authorization = 'TEST_AUTHORIZATION' }",
+                "header-key",
+            ),
+            (
+                "experimental_bearer_token = 'direct-key'\nenv_key = 'TEST_API_KEY'",
+                "direct-key",
+            ),
+            (
+                "http_headers = { Authorization = 'Basic not-an-api-key' }",
+                "file-key",
+            ),
+            ("env_key = 'MISSING_KEY'", "file-key"),
+        ] {
+            let doc: DocumentMut = format!("model_provider = 'active'\n[model_providers.inactive]\nexperimental_bearer_token = 'inactive-key'\n[model_providers.active]\n{config}\n").parse().unwrap();
+            let auth = json!({"OPENAI_API_KEY":"file-key"});
+            let key = configured_key_with(&doc, &auth, |name| match name {
+                "TEST_API_KEY" => Some(" environment-key ".into()),
+                "TEST_AUTHORIZATION" => Some("Bearer header-key".into()),
+                _ => None,
+            });
+            assert_eq!(key.as_deref(), Some(expected));
+        }
+        let doc: DocumentMut = "model_provider = 'active'\n[model_providers.inactive]\nexperimental_bearer_token = 'inactive-key'\n".parse().unwrap();
+        assert!(configured_key_with(&doc, &json!({}), |_| None).is_none());
+        assert!(configured_key_with(
+            &doc,
+            &json!({"auth_mode":"chatgpt", "OPENAI_API_KEY":"stale-key"}),
+            |_| None
+        )
+        .is_none());
+    }
+    #[test]
+    fn saved_file_key_is_read_again_after_restarting_the_service() {
+        let (base, root, data) = fixture();
+        let before = editor_view(&root, &data).unwrap();
+        save(&root, &data, &input(&before)).unwrap();
+        for _ in 0..2 {
+            let mut service =
+                crate::service::Service::new(data.clone(), base.join("home")).unwrap();
+            let editor = service
+                .dispatch(serde_json::from_value(json!({"action":"codex-read"})).unwrap())
+                .unwrap();
+            assert_eq!(editor["apiKey"], "dummy-api-key");
+            assert_eq!(editor["apiKeyConfigured"], true);
+        }
+        fs::remove_dir_all(base).unwrap();
     }
     #[test]
     fn saves_masked_api_configuration_preserves_comments_and_restores_login_exactly() {

@@ -124,6 +124,17 @@ fn cached(data: &Path) -> Result<Manifest> {
         .map_err(|_| "无法读取线路缓存")?;
     parse(&bytes)
 }
+fn store(data: &Path, manifest: &Manifest) -> Result<()> {
+    validate(manifest)?;
+    let path = data.join("cyapi-routes.json");
+    let bytes = serde_json::to_vec(manifest).map_err(|_| "无法保存线路清单")?;
+    let temporary = crate::configuration::stage(&path, &bytes)?;
+    if fs::rename(&temporary, &path).is_err() {
+        let _ = fs::remove_file(temporary);
+        return Err("无法更新线路缓存".into());
+    }
+    Ok(())
+}
 fn download(data: &Path) -> Result<Manifest> {
     let url = Url::parse(crate::service::SERVER_URL)
         .and_then(|base| base.join("api/cyapi-routes"))
@@ -131,20 +142,24 @@ fn download(data: &Path) -> Result<Manifest> {
     let bytes =
         crate::service::fetch_server_url(url, MAX_BYTES, 4).map_err(|_| "暂时无法更新线路清单")?;
     let manifest = parse(&bytes)?;
-    let path = data.join("cyapi-routes.json");
-    crate::configuration::no_links(&path)?;
-    fs::create_dir_all(data).map_err(|_| "无法创建线路缓存目录")?;
-    let temporary = data.join(format!("cyapi-routes-{}.tmp", uuid::Uuid::new_v4()));
-    fs::write(
-        &temporary,
-        serde_json::to_vec(&manifest).map_err(|_| "无法保存线路清单")?,
-    )
-    .map_err(|_| "无法保存线路清单")?;
-    if fs::rename(&temporary, &path).is_err() {
-        let _ = fs::remove_file(temporary);
-        return Err("无法更新线路缓存".into());
-    }
+    store(data, &manifest)?;
     Ok(manifest)
+}
+// This path never contacts the server: the UI can match the saved configuration
+// immediately, while a separate refresh replaces the cache atomically.
+pub fn read_cache(data: &Path) -> View {
+    match cached(data) {
+        Ok(manifest) => View {
+            manifest,
+            source: "cache",
+            message: None,
+        },
+        Err(_) => View {
+            manifest: defaults(),
+            source: "default",
+            message: None,
+        },
+    }
 }
 pub fn read(data: &Path) -> View {
     match download(data) {
@@ -221,6 +236,52 @@ pub fn probe(data: &Path, route_id: &str) -> Result<Measurement> {
 mod tests {
     use super::*;
     use std::{io::Write, net::TcpListener};
+    #[test]
+    fn local_cache_survives_reloads_and_valid_refreshes_replace_it_entirely() {
+        let data = std::env::temp_dir().join(format!("cyapi-routes-{}", uuid::Uuid::new_v4()));
+        assert_eq!(read_cache(&data).source, "default");
+        assert!(!data.exists());
+        let mut manifest = defaults();
+        manifest.routes.push(Route {
+            id: "old-backup".into(),
+            name: "Old backup".into(),
+            base_url: "https://old.example.invalid/v1".into(),
+        });
+        store(&data, &manifest).unwrap();
+        for _ in 0..2 {
+            let view = read_cache(&data);
+            assert_eq!(view.source, "cache");
+            assert!(view.message.is_none());
+            assert_eq!(view.manifest.routes[1].id, "old-backup");
+        }
+        manifest.routes[1].id = "new-backup".into();
+        manifest.routes[1].base_url = "https://new.example.invalid/v1".into();
+        store(&data, &manifest).unwrap();
+        let cached_bytes = fs::read(data.join("cyapi-routes.json")).unwrap();
+        assert_eq!(read_cache(&data).manifest.routes[1].id, "new-backup");
+        assert!(!String::from_utf8_lossy(&cached_bytes).contains("old-backup"));
+        manifest.routes[0].base_url = "https://invalid.example/v1".into();
+        assert!(store(&data, &manifest).is_err());
+        assert_eq!(
+            fs::read(data.join("cyapi-routes.json")).unwrap(),
+            cached_bytes
+        );
+        assert_eq!(fs::read_dir(&data).unwrap().count(), 1);
+        fs::remove_dir_all(data).unwrap();
+    }
+    #[test]
+    fn corrupt_or_oversized_caches_fall_back_without_network_or_rewriting_files() {
+        let data = std::env::temp_dir().join(format!("cyapi-routes-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&data).unwrap();
+        for bytes in [b"not json".to_vec(), vec![b' '; MAX_BYTES as usize + 1]] {
+            fs::write(data.join("cyapi-routes.json"), &bytes).unwrap();
+            let view = read_cache(&data);
+            assert_eq!(view.source, "default");
+            assert_eq!(view.manifest.routes[0].base_url, OFFICIAL_URL);
+            assert_eq!(fs::read(data.join("cyapi-routes.json")).unwrap(), bytes);
+        }
+        fs::remove_dir_all(data).unwrap();
+    }
     #[test]
     fn rejects_changed_default_duplicate_urls_and_embedded_credentials() {
         let mut manifest = defaults();
