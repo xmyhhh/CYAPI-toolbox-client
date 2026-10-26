@@ -4,7 +4,6 @@ import { parseContextWindow } from '../lib/model-settings';
 import { SettingHelp } from './ModelSettingField';
 
 const levelPresets = [
-  'none',
   'minimal',
   'low',
   'medium',
@@ -12,7 +11,6 @@ const levelPresets = [
   'xhigh',
   'max',
   'ultra',
-  'persistent',
 ];
 
 export interface CodexSettingDraft {

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, LoaderCircle, Package, Trash2 } from 'lucide-react';
 import { Modal } from '../../components/Primitives';
-import { canManageInstallation } from '../../lib/installations';
 import { nativeAvailable, nativeCall } from '../../lib/api/native';
 import type { NativeStatus } from '../../lib/api/native';
 import { collectionEntries } from './collections';
@@ -9,6 +8,7 @@ import type { InstalledSkill, SkillCollection } from './collections';
 import { previewCollection } from './collection-install';
 import type { CollectionLocation, CollectionStep } from './collection-install';
 import type { CollectionRunState } from './collection-run';
+import { removableCollectionEntries } from './collection-run';
 import type { CollectionRunInput } from './useCollectionRun';
 
 export function CollectionDialog({
@@ -73,9 +73,7 @@ export function CollectionDialog({
       setPreviewVersion((version) => version + 1);
       setCancelled(run.cancelled);
       if (run.removal?.removedIds.length) {
-        setRemovedRecordIds((previous) => [
-          ...new Set([...previous, ...run.removal!.removedIds]),
-        ]);
+        setRemovedRecordIds((previous) => [...new Set([...previous, ...run.removal!.removedIds])]);
       }
     }
     wasRunning.current = run.running;
@@ -87,9 +85,8 @@ export function CollectionDialog({
   const remainingInstalled = (installedEntries ?? []).filter(
     ({ record }) => !removedRecordIds.includes(record.id),
   );
-  const removableEntries = remainingInstalled.filter(
-    (entry) => entry.exists && canManageInstallation(entry, location.target),
-  );
+  const removableEntries = removableCollectionEntries(remainingInstalled, location.target);
+  const localRemovalCount = removableEntries.filter((entry) => entry.managed === false).length;
   const retainedCount = remainingInstalled.length - removableEntries.length;
   const changeLocation = (next: Partial<CollectionLocation>) => {
     setLocation((previous) => ({ ...previous, ...next }));
@@ -112,7 +109,7 @@ export function CollectionDialog({
       mode: 'uninstall',
       collectionId: collection.id,
       location,
-      entries: removableEntries,
+      entries: remainingInstalled,
     });
   };
   const elapsed = useElapsed(run.running, run.startedAt);
@@ -260,7 +257,8 @@ export function CollectionDialog({
             )}
             {working && (
               <p role="status">
-                <LoaderCircle size={15} className="n-spin" /> {run.cancelling ? '正在取消…' : run.progress}
+                <LoaderCircle size={15} className="n-spin" />{' '}
+                {run.cancelling ? '正在取消…' : run.progress}
                 {elapsed > 0 && ` · 已用时 ${elapsed} 秒`}
               </p>
             )}
@@ -269,19 +267,36 @@ export function CollectionDialog({
         {mode === 'uninstall' && (
           <>
             <p className="n-config-note">
-              工具箱管理的模块会移至备份目录；本机已有、文件缺失或不属于当前工作区的模块会保留。
+              确认后将下方可卸载的 {removableEntries.length} 项模块移至备份，其中本机已有{' '}
+              {localRemovalCount}{' '}
+              项。不会永久删除文件或共享运行环境；受保护、文件缺失或不属于当前工作区的模块会保留。
+            </p>
+            {localRemovalCount > 0 && (
+              <p className="n-config-note">
+                请核对下方完整路径。本机已有模块移除后，读取同一目录的其他客户端也会受影响；符号链接或目录联接仅移动链接，不移动源目录。
+              </p>
+            )}
+            <p className="n-config-note">
+              备份保存在 {status.dataPath.replace(/[\\/]+$/, '')}
+              /backups/，需要恢复时可将对应备份移回原路径。
             </p>
             {!nativeAvailable && <p className="n-config-note">请使用桌面版卸载套件。</p>}
             <div className="n-collection-plan">
               {remainingInstalled.map((entry) => {
-                const removable = entry.exists && canManageInstallation(entry, location.target);
-                const note = !entry.exists
-                  ? '文件已变化或缺失，保留'
-                  : entry.managed === false
-                    ? '本机已有版本，保留'
+                const removable = removableEntries.some(
+                  ({ record }) => record.id === entry.record.id,
+                );
+                const note = entry.removalBlockedReason
+                  ? `${entry.removalBlockedReason}，保留`
+                  : !entry.exists
+                    ? '文件已变化或缺失，保留'
                     : removable
-                      ? '将移至备份'
-                      : '不属于当前工作区，保留';
+                      ? entry.managed === false
+                        ? '本机已有 · 将移至备份'
+                        : '将移至备份'
+                      : entry.record.target !== location.target
+                        ? '不属于当前工作区，保留'
+                        : '当前不可移除，保留';
                 return (
                   <div key={entry.record.id}>
                     <div>
@@ -324,7 +339,8 @@ export function CollectionDialog({
             )}
             {working && (
               <p role="status">
-                <LoaderCircle size={15} className="n-spin" /> {run.cancelling ? '正在取消…' : run.progress}
+                <LoaderCircle size={15} className="n-spin" />{' '}
+                {run.cancelling ? '正在取消…' : run.progress}
                 {elapsed > 0 && ` · 已用时 ${elapsed} 秒`}
               </p>
             )}
@@ -350,11 +366,7 @@ export function CollectionDialog({
             <button className="n-button" onClick={onClose}>
               放至后台
             </button>
-            <button
-              className="n-button n-danger"
-              disabled={run.cancelling}
-              onClick={onCancel}
-            >
+            <button className="n-button n-danger" disabled={run.cancelling} onClick={onCancel}>
               {run.cancelling ? '正在取消…' : '取消任务'}
             </button>
           </>

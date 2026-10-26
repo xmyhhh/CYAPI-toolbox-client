@@ -1,11 +1,14 @@
 import { useState } from 'react';
 import { BookOpen, Check, Copy } from 'lucide-react';
 import type { IntegrationDescriptor } from '../../lib/api/native';
+import { integrationSetupSteps } from './model';
 
 export function IntegrationTutorial({ descriptor }: { descriptor: IntegrationDescriptor }) {
   const [copied, setCopied] = useState('');
   const [error, setError] = useState('');
   const guide = descriptor.guide;
+  const oneClickBlender =
+    descriptor.id === 'blender' && descriptor.skillId && descriptor.relatedMcpId === 'blender';
   async function copy(prompt: string) {
     try {
       await navigator.clipboard.writeText(prompt);
@@ -22,7 +25,7 @@ export function IntegrationTutorial({ descriptor }: { descriptor: IntegrationDes
         <h3>接入教程</h3>
         <span>从准备到第一次使用</span>
       </header>
-      {guide?.preparation.length ? (
+      {!oneClickBlender && guide?.preparation.length ? (
         <section>
           <h4>先准备好这些</h4>
           <ul>
@@ -35,10 +38,7 @@ export function IntegrationTutorial({ descriptor }: { descriptor: IntegrationDes
       <section>
         <h4>按步骤完成接入</h4>
         <ol className="n-setup-steps">
-          {(
-            guide?.steps ??
-            descriptor.steps.map((description, i) => ({ title: `步骤 ${i + 1}`, description }))
-          ).map((step, i) => (
+          {integrationSetupSteps(descriptor).map((step, i) => (
             <li key={step.title}>
               <span>{String(i + 1).padStart(2, '0')}</span>
               <div>

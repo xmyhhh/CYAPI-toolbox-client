@@ -1,4 +1,5 @@
 import { CollectionCancelledError, isCollectionCancelled } from './collection-install.ts';
+import { canRemoveInstallation } from '../../lib/installations.ts';
 import type { CollectionCall, CollectionProgress, CollectionResult } from './collection-install.ts';
 import type { InstalledSkill } from './collections.ts';
 
@@ -35,28 +36,46 @@ export const idleCollectionRun: CollectionRunState = {
   error: '',
 };
 
+/** Batch and individual removal use the same backend permission and workspace rules. */
+export function removableCollectionEntries(
+  entries: readonly InstalledSkill[],
+  workspace: InstalledSkill['record']['target'],
+): InstalledSkill[] {
+  return entries.filter((entry) => canRemoveInstallation(entry, workspace));
+}
+
 /**
  * Move every module of a suite to the backup directory. The run stops at the
  * first failure and reports which module blocked the rest.
  */
 export async function removeCollectionEntries(args: {
   entries: readonly InstalledSkill[];
+  workspace: InstalledSkill['record']['target'];
   call: CollectionCall;
   signal: AbortSignal;
   onProgress: (progress: CollectionProgress) => void;
-}): Promise<{ removed: number; removedIds: string[]; failed?: { title: string; message: string } }> {
-  const { entries, call, signal, onProgress } = args;
+}): Promise<{
+  removed: number;
+  removedIds: string[];
+  failed?: { title: string; message: string };
+}> {
+  const { entries, workspace, call, signal, onProgress } = args;
+  const removable = removableCollectionEntries(entries, workspace);
   const removedIds: string[] = [];
-  for (const [index, entry] of entries.entries()) {
+  for (const [index, entry] of removable.entries()) {
     if (signal.aborted) throw new CollectionCancelledError();
     onProgress({
       index: index + 1,
-      total: entries.length,
+      total: removable.length,
       title: entry.record.title,
       phase: 'remove',
     });
     try {
-      await call('remove', { recordId: entry.record.id });
+      const local = entry.managed === false;
+      await call(local ? 'remove-local' : 'remove', {
+        recordId: entry.record.id,
+        ...(local ? { installationPath: entry.record.path } : {}),
+      });
     } catch (error) {
       if (isCollectionCancelled(error)) throw error;
       // A call that failed because the user stopped the task is not a failure.

@@ -1,5 +1,5 @@
 import { Copy, Palette, Settings2, Trash2 } from 'lucide-react';
-import { canManageInstallation } from '../../lib/installations';
+import { canManageInstallation, canRemoveInstallation } from '../../lib/installations';
 import type { NativeRecord } from '../../lib/api/native';
 import type { InstalledSkill } from './collections';
 
@@ -21,10 +21,12 @@ export function InstalledSkillRow({
   configurable: boolean;
   onCopy: (path: string) => void;
   onConfigure: (record: NativeRecord) => void;
-  onRemove: (record: NativeRecord) => void;
+  onRemove: (entry: InstalledSkill) => void;
 }) {
   const { record, exists, managed } = entry;
   const canManage = canManageInstallation(entry, workspace);
+  const canRemove = canRemoveInstallation(entry, workspace);
+  const removalLabel = managed === false ? '移除' : '卸载';
   return (
     <article className="n-record">
       <span className="n-skill-icon">
@@ -42,6 +44,9 @@ export function InstalledSkillRow({
           {!exists && <span className="n-pill n-warning">文件已变化</span>}
         </h2>
         <code>{record.path}</code>
+        {entry.removalBlockedReason && (
+          <p className="n-config-note">{entry.removalBlockedReason}</p>
+        )}
         <p className="n-record-meta">
           {record.runtimes
             .map(
@@ -67,10 +72,15 @@ export function InstalledSkillRow({
       >
         <Copy size={16} />
       </button>
-      {canManage && (
-        <button className="n-button" disabled={busy} onClick={() => onRemove(record)}>
+      {record.target === workspace && (
+        <button
+          className="n-button"
+          disabled={busy || !canRemove}
+          title={entry.removalBlockedReason ?? `${removalLabel}并保留备份`}
+          onClick={() => onRemove(entry)}
+        >
           <Trash2 size={16} />
-          卸载
+          {removalLabel}
         </button>
       )}
     </article>

@@ -18,6 +18,7 @@ const themeFile = path.join(appDirectory, 'theme.css');
 /** The stylesheets that make up the running application. */
 export const STYLE_SHEETS = [
   'native.css',
+  'app-settings.css',
   'usage-statistics.css',
   'diagnostics.css',
   'codex-analysis.css',

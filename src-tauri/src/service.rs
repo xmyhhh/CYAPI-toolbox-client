@@ -23,6 +23,9 @@ type Result<T> = std::result::Result<T, String>;
 #[cfg(test)]
 #[path = "distribution_tests.rs"]
 mod distribution_tests;
+#[cfg(test)]
+#[path = "service/skill_removal_tests.rs"]
+mod skill_removal_tests;
 
 const MAX_PACKAGE: u64 = 56_000_000;
 /// The largest runtime download the client accepts. The macOS releases of Node
@@ -710,13 +713,47 @@ impl Service {
                 .is_file()
         {
             self.records.retain(|r| r.id != record.id);
+        } else if kind == "remove-local"
+            && journal["backupName"].as_str().is_some_and(|name| {
+                name.starts_with("local-")
+                    && valid_id(name)
+                    && fs::symlink_metadata(self.data.join("backups").join(name)).is_ok()
+            })
+            && fs::symlink_metadata(&record.path)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        {
+            self.records.retain(|r| r.id != record.id);
         }
         atomic_json(&self.data.join("installed.json"), &self.records)?;
         fs::remove_file(journal_path).map_err(err)
     }
     fn owns(record: &Record) -> bool {
-        read_json::<Record>(&Path::new(&record.path).join(".cyapi-install.json"))
-            .is_ok_and(|marker| marker.id == record.id && marker.path == record.path)
+        let path = Path::new(&record.path).join(".cyapi-install.json");
+        // An absent receipt is normal for locally discovered, unmanaged Skills.
+        // Do not route this probe through read_json(), whose errors are logged.
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+            Err(error) => {
+                crate::logging::event(
+                    "warn",
+                    "installer",
+                    format!("无法读取安装标记 {}：{error}", path.display()),
+                );
+                return false;
+            }
+        };
+        match serde_json::from_slice::<Record>(&bytes) {
+            Ok(marker) => marker.id == record.id && marker.path == record.path,
+            Err(error) => {
+                crate::logging::event(
+                    "warn",
+                    "installer",
+                    format!("安装标记无效 {}：{error}", path.display()),
+                );
+                false
+            }
+        }
     }
     fn package_path(&self, skill: &Skill) -> PathBuf {
         self.data
@@ -981,6 +1018,7 @@ impl Service {
     }
     fn discover_installations(&self, project: Option<&Path>) -> Vec<Installation> {
         use crate::installed::{path_key, scan};
+        let roots = self.skill_roots(project);
         let mut installed: Vec<_> = self
             .records
             .iter()
@@ -988,6 +1026,8 @@ impl Service {
                 record: record.clone(),
                 exists: Path::new(&record.path).join("SKILL.md").is_file(),
                 managed: Self::owns(record),
+                removable: false,
+                removal_blocked_reason: None,
                 visible_targets: vec![record.target.clone()],
             })
             .collect();
@@ -996,7 +1036,7 @@ impl Service {
             .enumerate()
             .map(|(index, entry)| (path_key(Path::new(&entry.record.path)), index))
             .collect();
-        for root in self.skill_roots(project) {
+        for root in &roots {
             for mut record in scan(&root.path, &root.target, &root.scope) {
                 let key = path_key(Path::new(&record.path));
                 if let Some(&index) = seen.get(&key) {
@@ -1020,11 +1060,69 @@ impl Service {
                     record,
                     exists: true,
                     managed: false,
+                    removable: false,
+                    removal_blocked_reason: None,
                     visible_targets: root.visible_targets.clone(),
                 });
             }
         }
+        for entry in &mut installed {
+            entry.removal_blocked_reason = Self::removal_blocked_reason(&entry.record, &roots);
+            entry.removable = entry.removal_blocked_reason.is_none();
+        }
         installed
+    }
+    /// Unowned local Skills must be direct children of a currently discovered root.
+    /// Resolve paths for system protection, but never rename a link's target.
+    fn removal_blocked_reason(record: &Record, roots: &[SkillRoot]) -> Option<String> {
+        let path = Path::new(&record.path);
+        let resolved = fs::canonicalize(path).ok();
+        let in_system_directory = |path: &Path| {
+            path.components().any(|component| {
+                component
+                    .as_os_str()
+                    .to_str()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(".system"))
+            })
+        };
+        if in_system_directory(path)
+            || resolved.as_deref().is_some_and(in_system_directory)
+            || roots
+                .iter()
+                .filter(|root| in_system_directory(&root.path))
+                .any(|root| {
+                    fs::canonicalize(&root.path).is_ok_and(|system| {
+                        resolved
+                            .as_ref()
+                            .is_some_and(|path| path.starts_with(system))
+                    })
+                })
+        {
+            return Some("系统内置 Skill 受保护，不支持移除".into());
+        }
+        // A managed record remains uninstallable if the agent's configured root
+        // changes later; only unowned local entries need a current discovery root.
+        if !Self::owns(record)
+            && (!path.is_absolute()
+                || path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_none_or(|name| name.starts_with('.'))
+                || !roots.iter().any(|root| {
+                    root.target == record.target
+                        && root.scope == record.scope
+                        && path.parent().is_some_and(|parent| {
+                            crate::installed::path_key(parent)
+                                == crate::installed::path_key(&root.path)
+                        })
+                }))
+        {
+            return Some("不在可管理的 Skill 目录中，请手动检查".into());
+        }
+        if !path.is_dir() || !path.join("SKILL.md").is_file() {
+            return Some("Skill 文件已变化，请刷新后检查目录".into());
+        }
+        None
     }
     fn existing_skill(
         &self,
@@ -1996,6 +2094,16 @@ exit 1
     /// Replace a managed installation with the version the catalog publishes now.
     /// The previous directory is moved aside first, so a failed update restores it.
     pub fn update(&mut self, id: &str, target: &str, scope: &str, project: &str) -> Result<Record> {
+        self.reinstall_skill(id, target, scope, project, false)
+    }
+    fn reinstall_skill(
+        &mut self,
+        id: &str,
+        target: &str,
+        scope: &str,
+        project: &str,
+        repair: bool,
+    ) -> Result<Record> {
         crate::logging::event("info", "installer", format!("检查 Skill 更新：{id}"));
         let skill = self.skill(id)?;
         Self::require_installable(&skill)?;
@@ -2006,7 +2114,7 @@ exit 1
         if !Self::owns(&record) {
             return Err("此 Skill 不是工具箱管理的版本，请先手动检查后再更新".into());
         }
-        if !record.package_sha256.is_empty() && record.package_sha256 == skill.sha256 {
+        if !repair && !record.package_sha256.is_empty() && record.package_sha256 == skill.sha256 {
             return Err("此 Skill 已是最新版本".into());
         }
         if !self.package_path(&skill).exists() {
@@ -2063,24 +2171,67 @@ exit 1
         if !Self::owns(&record) {
             return Err("Skill 已被移动、删除或管理标记变化，已保留文件，请手动检查目录".into());
         }
+        if let Some(reason) = Self::removal_blocked_reason(&record, &self.skill_roots(None)) {
+            return Err(reason);
+        }
+        self.backup_installation(&record, &destination, "remove")
+    }
+
+    fn remove_local(&mut self, id: &str, expected_path: &str) -> Result<String> {
+        // The caller confirms an exact displayed path, not an arbitrary filesystem path.
+        // Rescan on confirmation to recheck discovery, ownership and system protection.
+        let entry = self
+            .installations()
+            .into_iter()
+            .find(|entry| entry.record.id == id && entry.record.path == expected_path)
+            .ok_or("本地 Skill 已变化，请刷新列表后重试")?;
+        if entry.managed {
+            return Err("此 Skill 由工具箱管理，请使用卸载操作".into());
+        }
+        if let Some(reason) = entry.removal_blocked_reason {
+            return Err(reason);
+        }
+        let destination = self
+            .data
+            .join("backups")
+            .join(format!("local-{}", uuid::Uuid::new_v4()));
+        self.backup_installation(&entry.record, &destination, "remove-local")
+    }
+
+    fn backup_installation(
+        &mut self,
+        record: &Record,
+        destination: &Path,
+        kind: &str,
+    ) -> Result<String> {
+        if fs::symlink_metadata(destination).is_ok() {
+            return Err("备份目录已存在，已保留当前 Skill，请先检查备份".into());
+        }
         atomic_json(
             &self.data.join("pending.json"),
-            &json!({"kind":"remove","record":record}),
+            &json!({"kind":kind,"record":record,"backupName":destination.file_name().and_then(|name| name.to_str())}),
         )?;
-        fs::rename(&record.path,&destination).map_err(|_|"无法移动到备份目录。请关闭占用文件的程序；当前版本要求 Skill 与数据目录位于同一磁盘分区。")?;
+        // Rename the entry itself, including a symbolic link/junction. Never copy or
+        // recursively delete local content, and leave the source intact on failure.
+        if let Err(error) = fs::rename(&record.path, destination) {
+            let _ = fs::remove_file(self.data.join("pending.json"));
+            return Err(format!("无法移动到备份目录。请关闭占用文件的程序；当前版本要求 Skill 与数据目录位于同一磁盘分区。原文件已保留。{error}"));
+        }
         let records: Vec<_> = self
             .records
             .iter()
-            .filter(|r| r.id != id)
+            .filter(|r| r.id != record.id)
             .cloned()
             .collect();
         if let Err(error) = atomic_json(&self.data.join("installed.json"), &records) {
-            if let Err(rollback) = fs::rename(&destination, &record.path) {
+            if let Err(rollback) = fs::rename(destination, &record.path) {
                 crate::logging::event(
                     "error",
                     "installer",
                     format!("卸载记录保存失败后的目录回滚失败：{rollback}"),
                 );
+            } else {
+                let _ = fs::remove_file(self.data.join("pending.json"));
             }
             return Err(error);
         }
@@ -2135,95 +2286,7 @@ exit 1
             )
         }
     }
-    fn receipt_operation(&self, request: &Request) -> Option<crate::telemetry::Operation> {
-        let operation_id = request
-            .operation_id
-            .as_deref()
-            .and_then(|id| uuid::Uuid::parse_str(id).ok())
-            .unwrap_or_else(uuid::Uuid::new_v4)
-            .to_string();
-        let safe_target = |value: &str| match value {
-            "codex" | "claude" | "opencode" => value.to_string(),
-            _ => "none".into(),
-        };
-        match request.action.as_str() {
-            "download" | "install" | "update-skill" => {
-                let skill = self.skill(request.skill_id.as_deref()?).ok()?;
-                let cached = fs::read(self.package_path(&skill))
-                    .ok()
-                    .is_some_and(|bytes| validate_package(&bytes, &skill).is_ok());
-                Some(crate::telemetry::Operation {
-                    operation_id,
-                    item_id: skill.id,
-                    version: skill.version,
-                    action: match request.action.as_str() {
-                        "download" => "skill.download",
-                        "install" => "skill.install",
-                        _ => "skill.update",
-                    }
-                    .into(),
-                    target: if request.action == "download" {
-                        "none".into()
-                    } else {
-                        safe_target(request.target.as_deref().unwrap_or("codex"))
-                    },
-                    cache_hit: cached,
-                })
-            }
-            "mcp-install" | "mcp-adopt" => {
-                // Public catalog only: never send user-defined commands, URLs or local entries.
-                let catalog = crate::mcp::catalog(&self.data).ok()?;
-                let server = catalog
-                    .servers
-                    .into_iter()
-                    .find(|server| Some(server.id.as_str()) == request.server_id.as_deref())?;
-                Some(crate::telemetry::Operation {
-                    operation_id,
-                    item_id: server.id,
-                    version: server.version,
-                    action: if request.action == "mcp-install" {
-                        "mcp.attach"
-                    } else {
-                        "mcp.adopt"
-                    }
-                    .into(),
-                    target: safe_target(request.workspace.as_deref().unwrap_or("codex")),
-                    cache_hit: false,
-                })
-            }
-            _ => None,
-        }
-    }
     pub fn dispatch(&mut self, request: Request) -> Result<Value> {
-        match request.action.as_str() {
-            "telemetry-read" => {
-                return Ok(json!({"enabled": crate::telemetry::enabled(&self.data)}))
-            }
-            "telemetry-enable" | "telemetry-disable" => {
-                crate::telemetry::set_enabled(&self.data, request.action == "telemetry-enable")?;
-                return Ok(json!({"enabled": crate::telemetry::enabled(&self.data)}));
-            }
-            _ => {}
-        }
-        let operation = if crate::telemetry::enabled(&self.data) {
-            self.receipt_operation(&request)
-        } else {
-            None
-        };
-        let began = std::time::Instant::now();
-        let result = self.dispatch_inner(request);
-        if let Some(operation) = operation {
-            // Upload is handled by the independent outbox worker, never under the service lock.
-            let _ = crate::telemetry::record(
-                &self.data,
-                operation,
-                began.elapsed().as_millis() as u64,
-                result.as_ref().err().map(String::as_str),
-            );
-        }
-        result
-    }
-    fn dispatch_inner(&mut self, request: Request) -> Result<Value> {
         let id = request.skill_id.as_deref().unwrap_or("");
         let target = request.target.as_deref().unwrap_or("codex");
         let scope = request.scope.as_deref().unwrap_or("global");
@@ -2410,6 +2473,17 @@ exit 1
             "remove" => {
                 return self
                     .remove(request.record_id.as_deref().unwrap_or(""))
+                    .map(|backup| json!({"backupPath":backup}))
+            }
+            "remove-local" => {
+                return self
+                    .remove_local(
+                        request.record_id.as_deref().unwrap_or(""),
+                        request
+                            .installation_path
+                            .as_deref()
+                            .ok_or("缺少已确认的 Skill 路径")?,
+                    )
                     .map(|backup| json!({"backupPath":backup}))
             }
             "update-check" => {
@@ -3052,6 +3126,45 @@ print(json.dumps({'upstreamDraft': str(draft), 'tracks': len(content['tracks'])}
         )
     }
 
+    #[test]
+    fn catalog_operations_do_not_create_usage_reporting_state() {
+        let root = env::temp_dir().join(format!("cyapi-no-reporting-{}", uuid::Uuid::new_v4()));
+        let mut service = Service::new(root.join("data"), root.join("home")).unwrap();
+        let (skill, bytes) = fixture();
+        fs::write(service.package_path(&skill), bytes).unwrap();
+        service.catalog = Some(Catalog {
+            skill_groups: vec![],
+            schema: 1,
+            generated_at: "test".into(),
+            skills: vec![skill],
+            runtimes: vec![],
+        });
+
+        for action in ["download", "install"] {
+            let request = serde_json::from_value(json!({
+                "action": action, "skillId": "test", "target": "codex", "scope": "global"
+            }))
+            .unwrap();
+            service.dispatch(request).unwrap();
+        }
+        assert!(service
+            .dispatch(
+                serde_json::from_value(json!({"action":"install", "skillId":"missing"})).unwrap()
+            )
+            .is_err());
+        assert_eq!(service.records.len(), 1);
+        assert!(Path::new(&service.records[0].path)
+            .join("SKILL.md")
+            .is_file());
+        assert!(!service.data.join("telemetry.sqlite").exists());
+        for action in ["telemetry-read", "telemetry-enable", "telemetry-disable"] {
+            let request = serde_json::from_value(json!({"action": action})).unwrap();
+            assert_eq!(service.dispatch(request).unwrap_err(), "未知操作");
+        }
+        assert!(!service.data.join("telemetry-disabled").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn integration_fixture(service: &Service, extra: Value) {
         let mut descriptor = json!({"id":"example","name":"Example","minimumVersion":"1",
             "downloadUrl":"https://example.com/download","capabilities":[],"steps":[],"skillId":"test"});
@@ -3064,6 +3177,283 @@ print(json.dumps({'upstreamDraft': str(draft), 'tracks': len(content['tracks'])}
             &serde_json::to_vec(&json!({"schema":4,"integrations":[descriptor]})).unwrap(),
         )
         .unwrap();
+    }
+
+    fn integration_mcp_fixture(service: &Service) {
+        crate::mcp::cache(&service.data, &serde_json::to_vec(&json!({
+            "schema":1,"generatedAt":"test","servers":[{
+                "id":"example-mcp","name":"Example MCP","version":"1","description":"test",
+                "homepage":"https://example.com/","transport":{"type":"http","url":"http://127.0.0.1:9876/mcp"},
+                "workspaces":["codex","claude","opencode"]
+            }]
+        })).unwrap()).unwrap();
+        integration_fixture(service, json!({"relatedMcpId":"example-mcp"}));
+    }
+
+    #[test]
+    fn blender_service_probe_plan_tracks_only_the_selected_workspace_and_config_revision() {
+        let root = env::temp_dir().join(format!("cyapi-blender-probe-plan-{}", uuid::Uuid::new_v4()));
+        let service = Service::new(root.join("data"), root.join("home")).unwrap();
+        integration_fixture(&service, json!({"relatedMcpId":"blender"}));
+        crate::mcp::cache(&service.data, &serde_json::to_vec(&json!({
+            "schema":1,"generatedAt":"test","servers":[{
+                "id":"blender","configKey":"custom-blender","name":"Blender MCP","version":"2.2.4",
+                "description":"test","homepage":"https://example.com/",
+                "transport":{"type":"stdio","command":"uvx","args":["mcp-for-blender"]},
+                "workspaces":["codex","claude","opencode"]
+            }]
+        })).unwrap()).unwrap();
+        let config = service.codex_home().join("config.toml");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        fs::write(&config, "[mcp_servers.custom-blender]\ncommand='uvx'\nargs=['mcp-for-blender','--host','127.0.0.1','--port','8765']\n").unwrap();
+        let view = service.integrations_view("codex").unwrap();
+        let probes = service.integration_service_probes("codex").unwrap();
+        assert_eq!(probes.len(), 1);
+        assert_eq!(probes[0].id, "example");
+        assert_eq!(probes[0].revision.as_deref(), view["entries"][0]["mcpRevision"].as_str());
+        assert_eq!(probes[0].endpoint.as_ref().unwrap().port, 8765);
+        assert_eq!(view["entries"][0]["service"]["state"], "unverified");
+        assert!(service.integration_service_probes("claude").unwrap()[0].endpoint.is_err());
+        assert!(service.integration_service_probes("unknown").is_err());
+        let old_revision = probes[0].revision.clone();
+        fs::write(&config, "[mcp_servers.custom-blender]\ncommand='uvx'\nargs=['mcp-for-blender','--port','8766']\n").unwrap();
+        let probes = service.integration_service_probes("codex").unwrap();
+        assert_ne!(probes[0].revision, old_revision);
+        assert_eq!(probes[0].endpoint.as_ref().unwrap().port, 8766);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_ownership_markers_are_silent_but_damaged_markers_keep_path_context() {
+        let root = env::temp_dir().join(format!("cyapi-marker-probe-{}", uuid::Uuid::new_v4()));
+        let (skill, bytes) = fixture();
+        let mut service = Service::new(root.join("data"), root.join("home")).unwrap();
+        service.catalog = Some(Catalog {
+            schema: 2,
+            generated_at: "test".into(),
+            skill_groups: vec![],
+            skills: vec![skill.clone()],
+            runtimes: vec![],
+        });
+        fs::write(service.package_path(&skill), bytes).unwrap();
+        let record = service.install("test", "codex", "global", "").unwrap();
+        let marker = Path::new(&record.path).join(".cyapi-install.json");
+        fs::remove_file(&marker).unwrap();
+        let events = crate::logging::capture_events(|| {
+            assert!(!Service::owns(&record));
+            for _ in 0..5 {
+                let _ = service.status();
+            }
+        });
+        assert!(events.is_empty(), "{events:?}");
+        fs::write(&marker, "not JSON").unwrap();
+        let events = crate::logging::capture_events(|| {
+            assert!(!Service::owns(&record));
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "warn");
+        assert!(events[0].2.contains(".cyapi-install.json"));
+        assert!(events[0].2.contains(&record.path));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn integration_connect_installs_skill_and_mcp_in_one_workspace_and_is_retryable() {
+        for workspace in ["codex", "claude", "opencode"] {
+            let root = env::temp_dir().join(format!("cyapi-one-click-{}", uuid::Uuid::new_v4()));
+            let (skill, bytes) = fixture();
+            let mut service = Service::new(root.join("data"), root.join("home")).unwrap();
+            service.catalog = Some(Catalog {
+                schema: 2,
+                generated_at: "test".into(),
+                skill_groups: vec![],
+                skills: vec![skill.clone()],
+                runtimes: vec![],
+            });
+            fs::write(service.package_path(&skill), bytes).unwrap();
+            integration_mcp_fixture(&service);
+            let before = service.integrations_view(workspace).unwrap();
+            let connect = |revision: Value| {
+                serde_json::from_value(json!({"action":"integration-connect","integrationId":"example","workspace":workspace,"configurationRevision":revision})).unwrap()
+            };
+            let view = service
+                .dispatch(connect(before["entries"][0]["mcpRevision"].clone()))
+                .unwrap();
+            let entry = &view["entries"][0];
+            assert_eq!(entry["registered"], true);
+            assert_eq!(entry["relatedMcp"]["configured"], true);
+            assert_eq!(entry["relatedMcp"]["runtimeReady"], true);
+            assert_eq!(entry["readiness"]["state"], "configured");
+            assert_eq!(service.status()["installed"].as_array().unwrap().len(), 1);
+            assert!(entry["readiness"]["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|check| check["id"] == "software-service" && check["state"] == "unverified"));
+            let record = service.records[0].clone();
+            for other in ["codex", "claude", "opencode"]
+                .into_iter()
+                .filter(|w| *w != workspace)
+            {
+                assert_eq!(
+                    crate::mcp::view(&service.data, &service.mcp_context(), other).unwrap()
+                        ["entries"][0]["installed"],
+                    false
+                );
+            }
+            // Repeated preparation reuses the existing Skill, not a duplicate.
+            service
+                .dispatch(connect(entry["mcpRevision"].clone()))
+                .unwrap();
+            assert_eq!(service.records.len(), 1);
+            assert_eq!(service.records[0].id, record.id);
+            if workspace != "claude" {
+                let rev = crate::mcp::entry_revision_for(
+                    &service.mcp_context(),
+                    workspace,
+                    "example-mcp",
+                )
+                .unwrap();
+                crate::mcp::toggle_enabled(
+                    &service.data,
+                    &service.mcp_context(),
+                    workspace,
+                    "example-mcp",
+                    &rev,
+                    false,
+                )
+                .unwrap();
+                let view = service.integrations_view(workspace).unwrap();
+                assert_eq!(view["entries"][0]["relatedMcp"]["configured"], false);
+                let repaired = service
+                    .dispatch(connect(view["entries"][0]["mcpRevision"].clone()))
+                    .unwrap();
+                assert_eq!(repaired["entries"][0]["relatedMcp"]["configured"], true);
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn partial_integration_failure_preserves_skill_and_user_mcp_then_can_resume() {
+        let root = env::temp_dir().join(format!("cyapi-partial-connect-{}", uuid::Uuid::new_v4()));
+        let (skill, bytes) = fixture();
+        let mut service = Service::new(root.join("data"), root.join("home")).unwrap();
+        service.catalog = Some(Catalog {
+            schema: 2,
+            generated_at: "test".into(),
+            skill_groups: vec![],
+            skills: vec![skill.clone()],
+            runtimes: vec![],
+        });
+        fs::write(service.package_path(&skill), bytes).unwrap();
+        integration_mcp_fixture(&service);
+        let config = service.mcp_context().codex_config;
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        let original = "# keep user settings\n[mcp_servers.example-mcp]\ncommand = 'my-server'\nargs = ['custom']\n";
+        fs::write(&config, original).unwrap();
+        let before = service.integrations_view("codex").unwrap();
+        let request = |revision: Value| {
+            serde_json::from_value(json!({"action":"integration-connect","integrationId":"example","workspace":"codex","configurationRevision":revision})).unwrap()
+        };
+        let error = service
+            .dispatch(request(before["entries"][0]["mcpRevision"].clone()))
+            .unwrap_err();
+        assert!(
+            error.contains("Skill 已安装") && error.contains("冲突"),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(&config).unwrap(), original);
+        assert_eq!(service.records.len(), 1);
+        assert_eq!(service.status()["installed"][0]["exists"], true);
+        let partial = service.integrations_view("codex").unwrap();
+        assert_eq!(partial["entries"][0]["registered"], true);
+        assert_eq!(
+            partial["entries"][0]["readiness"]["state"],
+            "needs-attention"
+        );
+        assert_eq!(partial["entries"][0]["relatedMcp"]["configured"], false);
+        // Simulate the user's explicit resolution, then resume without reinstalling.
+        fs::write(&config, "# keep user settings\n").unwrap();
+        let next = service.integrations_view("codex").unwrap();
+        let complete = service
+            .dispatch(request(next["entries"][0]["mcpRevision"].clone()))
+            .unwrap();
+        assert_eq!(complete["entries"][0]["relatedMcp"]["configured"], true);
+        assert_eq!(service.records.len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn integration_connect_rejects_a_stale_mcp_snapshot_without_reverting_installed_skill() {
+        let root = env::temp_dir().join(format!("cyapi-stale-connect-{}", uuid::Uuid::new_v4()));
+        let (skill, bytes) = fixture();
+        let mut service = Service::new(root.join("data"), root.join("home")).unwrap();
+        service.catalog = Some(Catalog {
+            schema: 2,
+            generated_at: "test".into(),
+            skill_groups: vec![],
+            skills: vec![skill.clone()],
+            runtimes: vec![],
+        });
+        fs::write(service.package_path(&skill), bytes).unwrap();
+        integration_mcp_fixture(&service);
+        let before = service.integrations_view("codex").unwrap();
+        let config = service.mcp_context().codex_config;
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        let edited = "[mcp_servers.example-mcp]\nurl='http://127.0.0.1:9876/mcp'\nenabled=false\n";
+        fs::write(&config, edited).unwrap();
+        let error = service.dispatch(serde_json::from_value(json!({"action":"integration-connect","integrationId":"example","workspace":"codex","configurationRevision":before["entries"][0]["mcpRevision"]})).unwrap()).unwrap_err();
+        assert!(error.contains("配置已变化"), "{error}");
+        assert_eq!(fs::read_to_string(config).unwrap(), edited);
+        assert_eq!(service.records.len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn integration_connect_repairs_missing_shared_dependencies_beside_the_existing_skill() {
+        let root = env::temp_dir().join(format!("cyapi-repair-connect-{}", uuid::Uuid::new_v4()));
+        let (mut skill, bytes) = fixture();
+        let (shared, shared_bytes) = fixture_for("support");
+        skill.shared_dependencies = vec![shared.id.clone()];
+        let mut service = Service::new(root.join("data"), root.join("home")).unwrap();
+        service.catalog = Some(Catalog {
+            schema: 2,
+            generated_at: "test".into(),
+            skill_groups: vec![],
+            skills: vec![skill.clone(), shared.clone()],
+            runtimes: vec![],
+        });
+        fs::write(service.package_path(&skill), bytes).unwrap();
+        fs::write(service.package_path(&shared), shared_bytes).unwrap();
+        integration_fixture(&service, json!({}));
+        let installed = service.install("test", "opencode", "global", "").unwrap();
+        // An inherited copy must not satisfy the dependent's relative paths.
+        let inherited = service.install("support", "codex", "global", "").unwrap();
+        let support = service
+            .records
+            .iter()
+            .find(|r| r.skill_id == "support" && r.target == "opencode")
+            .unwrap()
+            .clone();
+        service.remove(&support.id).unwrap();
+        assert_eq!(
+            service.integrations_view("opencode").unwrap()["entries"][0]["usable"],
+            false
+        );
+        let view = service.dispatch(serde_json::from_value(json!({"action":"integration-connect","integrationId":"example","workspace":"opencode"})).unwrap()).unwrap();
+        assert_eq!(view["entries"][0]["usable"], true);
+        assert!(Path::new(&installed.path)
+            .parent()
+            .unwrap()
+            .join("support/SKILL.md")
+            .is_file());
+        assert!(Path::new(&inherited.path).join("SKILL.md").is_file());
+        assert!(service
+            .records
+            .iter()
+            .any(|record| record.id == installed.id));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

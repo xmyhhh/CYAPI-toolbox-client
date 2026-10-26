@@ -15,16 +15,13 @@ import {
   Globe2,
   Grid2X2,
   LoaderCircle,
-  Moon,
   Package,
-  Palette,
   Plug,
   RefreshCw,
   Search,
   Server,
   Settings2,
   SquareTerminal,
-  Sun,
   Wifi,
   WifiOff,
   Zap,
@@ -33,6 +30,7 @@ import ReactMarkdown from 'react-markdown';
 import { getVersion } from '@tauri-apps/api/app';
 import { Modal } from '../components/Primitives';
 import { ConfigurationDialog } from './ConfigurationDialog';
+import { AppSettings } from './AppSettings';
 import { CodexSettings } from './CodexSettings';
 import { ClaudeSettings } from './ClaudeSettings';
 import { OpenCodeSettings } from './OpenCodeSettings';
@@ -77,7 +75,6 @@ import type { ThemePreference } from '../lib/theme';
 import { visibleInWorkspace } from '../lib/installations';
 import { readCyapiRoutes } from '../lib/api/cyapi';
 import {
-  APP_NAME,
   APP_VERSION,
   COPYRIGHT_SHORT,
   COPYRIGHT_TEXT,
@@ -142,7 +139,6 @@ export default function App() {
     applyTheme(preference);
     setThemeState(preference);
   }, []);
-  const themeLabel = theme === 'system' ? '跟随系统' : theme === 'light' ? '浅色' : '深色';
   // The native window follows the same appearance as the page.
   useEffect(() => syncNativeTheme(theme), [theme]);
   const lastOperation = useRef<string | undefined>(undefined);
@@ -169,6 +165,9 @@ export default function App() {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const workspaceMenu = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<NativeStatus>();
+  const refreshInstallations = useCallback(async () => {
+    if (nativeAvailable) setStatus(await nativeCall<NativeStatus>('status'));
+  }, []);
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('');
   const [recommendedOnly, setRecommendedOnly] = useState(false);
@@ -186,11 +185,8 @@ export default function App() {
   const [plan, setPlan] = useState<NativePlan>();
   const [planError, setPlanError] = useState('');
   const [completed, setCompleted] = useState<NativeRecord>();
-  const [remove, setRemove] = useState<NativeRecord>();
+  const [remove, setRemove] = useState<InstalledSkill>();
   const [help, setHelp] = useState(false);
-  const [telemetryEnabled, setTelemetryEnabled] = useState<boolean>();
-  const [telemetryError, setTelemetryError] = useState('');
-  const [telemetryBusy, setTelemetryBusy] = useState(false);
   const [appVersion, setAppVersion] = useState(APP_VERSION);
   const [update, setUpdate] = useState<UpdateStatus>();
   const [updateHidden, setUpdateHidden] = useState(false);
@@ -316,13 +312,6 @@ export default function App() {
     // Opening settings always checks again, including previously skipped releases.
     if (page === 'settings') {
       void checkForUpdates(true);
-      if (nativeAvailable)
-        void nativeCall<{ enabled: boolean }>('telemetry-read')
-          .then((value) => {
-            setTelemetryEnabled(value.enabled);
-            setTelemetryError('');
-          })
-          .catch(() => setTelemetryError('无法读取统计设置，请稍后重试。'));
     }
   }, [page, checkForUpdates]);
   useEffect(() => {
@@ -412,12 +401,24 @@ export default function App() {
   }
   async function uninstall() {
     if (!remove) return;
+    const local = remove.managed === false;
     setBusy('正在将 Skill 移至备份');
+    setNotice(undefined);
     try {
-      const result = await nativeCall<{ backupPath: string }>('remove', { recordId: remove.id });
+      const result = await nativeCall<{ backupPath: string }>(local ? 'remove-local' : 'remove', {
+        recordId: remove.record.id,
+        ...(local ? { installationPath: remove.record.path } : {}),
+      });
       setRemove(undefined);
-      setStatus(await nativeCall<NativeStatus>('status'));
-      setNotice({ text: `已卸载，原文件保留在：${result.backupPath}` });
+      let refreshNote = '';
+      try {
+        setStatus(await nativeCall<NativeStatus>('status'));
+      } catch {
+        refreshNote = '（列表刷新失败，请重新同步目录。）';
+      }
+      setNotice({
+        text: `已${local ? '移除' : '卸载'}，原文件保留在：${result.backupPath}${refreshNote}`,
+      });
     } catch (e) {
       setNotice({ text: errorText(e), error: true });
     } finally {
@@ -525,9 +526,9 @@ export default function App() {
       )}
       onCopy={(path) => void copy(path)}
       onConfigure={(record) => setConfiguration({ title: record.title, recordId: record.id })}
-      onRemove={(record) => {
+      onRemove={(entry) => {
         setNotice(undefined);
-        setRemove(record);
+        setRemove(entry);
       }}
     />
   );
@@ -740,6 +741,7 @@ export default function App() {
             page !== 'mcp' &&
             page !== 'integrations' &&
             page !== 'usage' &&
+            page !== 'settings' &&
             page !== 'diagnostics' && (
               <div className="n-heading-actions">
                 <span
@@ -818,6 +820,7 @@ export default function App() {
             {page === 'integrations' && (
               <Integrations
                 workspace={workspace}
+                onInstallationsChanged={refreshInstallations}
                 onManageMcp={(id, installed) => {
                   setMcpFocus({ query: id, tab: installed ? 'installed' : 'catalog' });
                   setPage('mcp');
@@ -1077,195 +1080,23 @@ export default function App() {
               ))}
 
             {page === 'settings' && (
-              <>
-                <section className="n-panel" aria-label="使用统计">
-                  <div className="n-panel-heading">
-                    <h2>使用统计</h2>
-                  </div>
-                  <p className="n-config-note">
-                    发送公开 Skill 的下载校验、安装与更新结果，以及公开 MCP
-                    的配置接入结果，用于改进服务。统计包含条目版本、平台、目标软件、耗时和随机设备标识；不包含
-                    API Key、命令、文件路径或模型请求。
-                  </p>
-                  <button
-                    className="n-button"
-                    disabled={!nativeAvailable || telemetryEnabled === undefined || telemetryBusy}
-                    onClick={async () => {
-                      setTelemetryBusy(true);
-                      setTelemetryError('');
-                      try {
-                        const value = await nativeCall<{ enabled: boolean }>(
-                          telemetryEnabled ? 'telemetry-disable' : 'telemetry-enable',
-                        );
-                        setTelemetryEnabled(value.enabled);
-                      } catch {
-                        setTelemetryError('无法保存统计设置，请稍后重试。');
-                      } finally {
-                        setTelemetryBusy(false);
-                      }
-                    }}
-                  >
-                    {telemetryBusy
-                      ? '正在保存…'
-                      : telemetryEnabled === undefined
-                        ? '正在读取…'
-                        : telemetryEnabled
-                          ? '关闭使用统计'
-                          : '开启使用统计'}
-                  </button>
-                  <p className="n-config-note">关闭后停止新增和发送回执，并清除本地待发送队列。</p>
-                  {telemetryError && (
-                    <p className="n-error-text" role="alert">
-                      {telemetryError}
-                    </p>
-                  )}
-                </section>
-                <section
-                  className="n-panel n-update-panel"
-                  aria-label="软件更新"
-                  aria-busy={updateChecking}
-                >
-                  <div className="n-panel-heading">
-                    <h2>检查更新</h2>
-                    <button
-                      className="n-button"
-                      disabled={updateChecking || !!updateStep}
-                      onClick={() => void checkForUpdates(true)}
-                    >
-                      <RefreshCw size={14} className={updateChecking ? 'n-spin' : ''} />
-                      {updateChecking ? '正在检查…' : '检查更新'}
-                    </button>
-                  </div>
-                  <p className="n-config-note">每次进入设置时自动检查，也可手动检查。</p>
-                  <div className="n-update-versions">
-                    <span>
-                      当前版本 <strong>v{appVersion}</strong>
-                    </span>
-                    {update && !updateChecking && (
-                      <span>
-                        {update.source === 'cached' ? '上次获取版本' : '最新发布版本'}{' '}
-                        <strong>v{update.latest}</strong>
-                      </span>
-                    )}
-                  </div>
-                  <div
-                    className={`n-alert ${updateCheckError && !updateChecking ? 'n-error' : 'n-success'}`}
-                    role={updateCheckError && !updateChecking ? 'alert' : 'status'}
-                  >
-                    {updateChecking ? (
-                      <LoaderCircle size={16} className="n-spin" />
-                    ) : updateCheckError ? (
-                      <WifiOff size={16} />
-                    ) : (
-                      <CheckCircle2 size={16} />
-                    )}
-                    <span>
-                      {updateChecking
-                        ? '正在获取最新版本信息…'
-                        : updateCheckError
-                          ? update?.source === 'cached'
-                            ? '暂时无法获取最新版本，以下为上次的更新信息。'
-                            : '检查更新失败，请稍后重试。'
-                          : update?.hasUpdate
-                            ? '有可用更新，请查看下方更新说明。'
-                            : update
-                              ? '当前已是最新版本，无需更新。'
-                              : '等待检查更新。'}
-                    </span>
-                  </div>
-                  {!updateChecking && updateCheckError && (
-                    <p className="n-error-text">{updateCheckError}</p>
-                  )}
-                  {updateBanner}
-                  {!updateChecking && updateCheckedAt && (
-                    <p className="n-config-note">
-                      上次检查：
-                      {new Date(updateCheckedAt).toLocaleString('zh-CN', { hour12: false })}
-                    </p>
-                  )}
-                </section>
-                <section className="n-panel">
-                  <div className="n-panel-heading">
-                    <h2>数据目录</h2>
-                  </div>
-                  <div className="n-path-box">
-                    <code>{status?.dataPath ?? '正在加载…'}</code>
-                    <button
-                      className="n-icon-button"
-                      onClick={() => status && copy(status.dataPath)}
-                      aria-label="复制数据路径"
-                      title="复制路径"
-                    >
-                      <Copy size={16} />
-                    </button>
-                  </div>
-                </section>
-                <section className="n-panel">
-                  <div className="n-panel-heading">
-                    <h2>外观</h2>
-                    <span>{themeLabel}</span>
-                  </div>
-                  <p className="n-config-note">
-                    默认跟随系统外观。手动选择会保存在本机，切换后立即生效。
-                  </p>
-                  <div className="n-theme-options" role="group" aria-label="外观">
-                    {(
-                      [
-                        ['system', '跟随系统'],
-                        ['light', '浅色'],
-                        ['dark', '深色'],
-                      ] as const
-                    ).map(([value, label]) => (
-                      <button
-                        key={value}
-                        className={`n-button${theme === value ? ' n-primary' : ''}`}
-                        aria-pressed={theme === value}
-                        onClick={() => setTheme(value)}
-                      >
-                        {value === 'system' ? <Palette size={15} /> : null}
-                        {value === 'light' ? <Sun size={15} /> : null}
-                        {value === 'dark' ? <Moon size={15} /> : null}
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </section>
-                <section className="n-panel n-about-panel">
-                  <div className="n-panel-heading">
-                    <h2>关于</h2>
-                    <span>v{appVersion}</span>
-                  </div>
-                  <p className="n-config-note">
-                    {APP_NAME} 是 CYAPI 官方的 AI 工作流工具箱，用于管理模型接入、Skill、MCP
-                    与软件接入。
-                  </p>
-                  <div className="n-about-actions">
-                    <button
-                      className="n-button n-primary"
-                      onClick={() => void openSite(OFFICIAL_SITE)}
-                    >
-                      <Globe2 size={15} />
-                      访问官网
-                    </button>
-                    <button className="n-button" onClick={() => void openSite(DOWNLOAD_PAGE)}>
-                      <Download size={15} />
-                      前往下载页
-                    </button>
-                  </div>
-                  <div className="n-path-box">
-                    <code>{OFFICIAL_SITE}</code>
-                    <button
-                      className="n-icon-button"
-                      onClick={() => copy(OFFICIAL_SITE)}
-                      aria-label="复制官网地址"
-                      title="复制地址"
-                    >
-                      <Copy size={16} />
-                    </button>
-                  </div>
-                  <p className="n-about-copyright">{COPYRIGHT_TEXT}</p>
-                </section>
-              </>
+              <AppSettings
+                appVersion={appVersion}
+                theme={theme}
+                onThemeChange={setTheme}
+                dataPath={status?.dataPath}
+                onCopy={(text) => void copy(text)}
+                onOpenSite={(url) => void openSite(url)}
+                updates={{
+                  status: update,
+                  checking: updateChecking,
+                  error: updateCheckError,
+                  checkedAt: updateCheckedAt,
+                  busy: !!updateStep,
+                  onCheck: () => void checkForUpdates(true),
+                  banner: updateBanner,
+                }}
+              />
             )}
           </div>
         </main>
@@ -1545,12 +1376,23 @@ export default function App() {
         <ConfigurationDialog target={configuration} onClose={() => setConfiguration(undefined)} />
       )}
       {remove && (
-        <Modal title={`卸载 ${remove.title}`} onClose={() => setRemove(undefined)} busy={!!busy}>
+        <Modal
+          title={`${remove.managed === false ? '移除' : '卸载'} ${remove.record.title}`}
+          onClose={() => setRemove(undefined)}
+          busy={!!busy}
+        >
           <div className="n-remove">
-            <p>卸载后保留文件备份和共享环境。</p>
+            <p>将以下 Skill 目录移至工具箱备份，不会永久删除文件，也不会移除共享运行环境。</p>
+            {remove.managed === false && (
+              <p>
+                这是本机已有的
+                Skill，移除后相关客户端将无法再从此目录加载它。若目录被多个客户端共享，也会影响其他客户端。若为符号链接或目录联接，仅移动链接，不移动源目录。
+              </p>
+            )}
             <div className="n-path-box">
-              <code>{remove.path}</code>
+              <code>{remove.record.path}</code>
             </div>
+            <p>完成后会显示备份路径，需要恢复时可将备份移回原路径。</p>
             {alert}
             {progress}
           </div>
@@ -1559,7 +1401,7 @@ export default function App() {
               取消
             </button>
             <button className="n-button n-danger" disabled={!!busy} onClick={uninstall}>
-              {busy ? '正在卸载…' : '备份并卸载'}
+              {busy ? '正在移至备份…' : remove.managed === false ? '备份并移除' : '备份并卸载'}
             </button>
           </div>
         </Modal>

@@ -16,6 +16,7 @@ import {
   Unplug,
 } from 'lucide-react';
 import { nativeAvailable, nativeCall, SERVER_URL } from '../lib/api/native';
+import { mcpConfirmation } from '../features/mcp/actions';
 import type {
   McpCatalog,
   McpDescriptor,
@@ -32,9 +33,9 @@ const workspaceNames: Record<Workspace, string> = {
   opencode: 'OpenCode',
 };
 const workspaceNotes: Record<Workspace, string> = {
-  codex: '管理 Codex 的 MCP 接入，可在此启用、停用或移除。',
+  codex: '管理 Codex 的 MCP 接入；停用保留配置，移除接入不会卸载服务。',
   claude: '管理 Claude Code 的全局 MCP 接入；项目内启用或停用请在 /mcp 中操作。',
-  opencode: '管理 OpenCode 的 MCP 接入，可在此启用、停用或移除。',
+  opencode: '管理 OpenCode 的 MCP 接入；停用保留配置，移除接入不会卸载服务。',
 };
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -85,18 +86,14 @@ function InstalledActions({
   onAction: ActionHandler;
 }) {
   const canUpdate = server && status?.canInstall && entry.managed && !status.recognized;
+  if (entry.readOnlyReason)
+    return (
+      <span className="n-config-note" title={entry.readOnlyReason}>
+        只读
+      </span>
+    );
   return (
     <div className="n-mcp-installed-actions">
-      {server && status?.canAdopt && (
-        <button
-          className="n-button"
-          disabled={disabled}
-          onClick={() => onAction('mcp-adopt', server.id)}
-        >
-          <CheckCircle2 size={14} />
-          {status.modified ? '重新接管' : '接管现有配置'}
-        </button>
-      )}
       {server && (canUpdate || status?.state === 'stale') && (
         <button
           className="n-button"
@@ -107,7 +104,7 @@ function InstalledActions({
           {status?.state === 'stale' ? '更新凭证' : '更新配置'}
         </button>
       )}
-      {entry.managed && workspace !== 'claude' && (
+      {workspace !== 'claude' && (
         <button
           className="n-button"
           disabled={disabled}
@@ -117,19 +114,14 @@ function InstalledActions({
           {entry.enabled ? '停用' : '启用'}
         </button>
       )}
-      {entry.managed && (
-        <button
-          className="n-button"
-          disabled={disabled}
-          onClick={() => onAction('mcp-remove', entry.name)}
-          aria-label={`从 ${workspaceNames[workspace]} 移除 ${entry.name}`}
-        >
-          <Unplug size={14} /> 移除
-        </button>
-      )}
-      {!entry.managed && !status?.canAdopt && status?.state !== 'stale' && (
-        <span className="n-config-note">在原配置中管理</span>
-      )}
+      <button
+        className="n-button"
+        disabled={disabled}
+        onClick={() => onAction('mcp-remove', entry.name)}
+        aria-label={`从 ${workspaceNames[workspace]} 移除 ${entry.name} 的接入`}
+      >
+        <Unplug size={14} /> 移除接入
+      </button>
     </div>
   );
 }
@@ -249,17 +241,18 @@ function WorkspaceMcpManager({
   // the pipe of a restarted runtime, must not invalidate a pending action.
   function revisionOf(action: string, serverId?: string) {
     if (!serverId) return view?.revision;
-    if (action === 'mcp-install' || action === 'mcp-adopt')
+    if (action === 'mcp-install')
       return view?.entries.find((entry) => entry.id === serverId)?.revision;
     return view?.local.find((entry) => entry.name === serverId)?.revision;
   }
 
   async function update(action: string, serverId?: string) {
-    if (
-      action === 'mcp-remove' &&
-      !window.confirm(`从 ${agentName} 移除 ${serverId} 的 MCP 配置？`)
-    )
-      return;
+    const confirmation = mcpConfirmation(
+      action,
+      workspace,
+      view?.local.find((entry) => entry.name === serverId),
+    );
+    if (confirmation && !window.confirm(confirmation)) return;
     setBusy(action);
     setNotice(undefined);
     try {
@@ -273,9 +266,11 @@ function WorkspaceMcpManager({
       setView(next);
       const messages: Record<string, string> = {
         'mcp-view': `已重新检测 ${agentName} 的 MCP 配置。`,
-        'mcp-install': `已接入 ${agentName}，重启 ${agentName} 后生效。`,
-        'mcp-adopt': `已接管 ${agentName} 的本机 MCP 配置。`,
-        'mcp-remove': `已从 ${agentName} 移除 MCP 配置。`,
+        'mcp-install':
+          workspace === 'opencode'
+            ? '已接入 OpenCode，配置会自动重新加载。'
+            : `已接入 ${agentName}，重启 ${agentName} 后生效。`,
+        'mcp-remove': `已从 ${agentName} 移除 MCP 接入，未卸载服务。`,
         'mcp-enable': `已启用 ${agentName} 的 MCP 配置。`,
         'mcp-disable': `已停用 ${agentName} 的 MCP 配置。`,
         'mcp-local-remove': '已删除本机自定义条目，已接入的软件配置仍保留。',
@@ -726,9 +721,6 @@ function WorkspaceMcpManager({
                     <h2>
                       {server?.name ?? entry.name}
                       <span className="n-pill">{agentName}</span>
-                      <span className={`n-pill ${entry.managed ? 'n-ready' : ''}`}>
-                        {entry.managed ? '工具箱管理' : '外部配置'}
-                      </span>
                       {workspace !== 'claude' && (
                         <span className={`n-pill ${entry.enabled ? 'n-ready' : 'n-warning'}`}>
                           {entry.enabled ? '已启用' : '已停用'}
@@ -740,13 +732,13 @@ function WorkspaceMcpManager({
                       {entry.name} · {transportLabel(entry.transport)}
                       {workspace === 'claude' && ' · 全局接入'}
                     </p>
-                    {(status?.conflict || entry.duplicate) && (
+                    {status?.conflict && !entry.readOnlyReason && (
                       <p className="n-mcp-warning">
-                        {status?.conflictReason || '同名配置与广场条目不同，请在原配置中检查。'}
+                        本机配置与广场条目不同，启停不会覆盖现有地址或参数。
                       </p>
                     )}
-                    {status?.modified && (
-                      <p className="n-mcp-warning">配置已在外部修改，重新接管后可继续管理。</p>
+                    {entry.readOnlyReason && (
+                      <p className="n-config-note">{entry.readOnlyReason}</p>
                     )}
                     {status && !status.tokenAvailable && (
                       <p className="n-mcp-warning">

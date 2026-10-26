@@ -4,7 +4,11 @@ import { parseSkillManifest } from '../src/skills/manifest.ts';
 import { installationPath } from '../src/skills/targets.ts';
 import { installer } from '../src/lib/api/installer.ts';
 import { catalogCategories, filterCatalog } from '../src/lib/catalog.ts';
-import { canManageInstallation, visibleInWorkspace } from '../src/lib/installations.ts';
+import {
+  canManageInstallation,
+  canRemoveInstallation,
+  visibleInWorkspace,
+} from '../src/lib/installations.ts';
 import type { NativeRecord } from '../src/lib/api/native.ts';
 import type { CodexConfiguration } from '../src/lib/api/native.ts';
 import {
@@ -29,8 +33,19 @@ import {
   integrationManifest,
   integrationComponent,
   integrationLabel,
+  integrationCanPrepare,
+  integrationPreparedNotice,
+  integrationSetupSteps,
+  integrationPrepareLabel,
+  integrationServiceView,
+  integrationServiceFailure,
 } from '../src/features/integrations/model.ts';
-import type { IntegrationDescriptor, IntegrationEntry } from '../src/lib/api/native.ts';
+import type {
+  IntegrationDescriptor,
+  IntegrationEntry,
+  IntegrationView,
+  IntegrationServicesView,
+} from '../src/lib/api/native.ts';
 
 test('model selection keeps a single default in the configured set without duplicates', () => {
   assert.deepEqual(configuredModels([' a ', 'b', 'a', ''], 'b'), ['a', 'b']);
@@ -255,13 +270,170 @@ test('software status keeps installation separate from software and first-task v
     health: { ready: true },
     readiness: { state: 'configured' },
   } as IntegrationEntry;
-  assert.equal(integrationLabel(descriptor, entry), '待首次验证');
+  assert.equal(integrationLabel(descriptor, entry), '已配置 · 待验证');
   assert.equal(
     integrationLabel(descriptor, { ...entry, readiness: { state: 'needs-attention', checks: [] } }),
     '需要处理',
   );
   assert.equal(integrationLabel(descriptor, { ...entry, registered: false }), '待准备');
   assert.equal(integrationLabel(descriptor), '待检查');
+});
+
+test('one-click integration repairs partial preparation and never equates configuration with a live connection', () => {
+  const descriptor = { skillId: 'example', relatedMcpId: 'blender' } as IntegrationDescriptor;
+  const partial = {
+    registered: true,
+    usable: false,
+    relatedMcp: { id: 'blender', configured: false, runtimeReady: false, state: 'absent' },
+    health: { ready: true },
+    readiness: { state: 'needs-attention', checks: [] },
+  } as IntegrationEntry;
+  assert.equal(integrationCanPrepare(descriptor, partial), true);
+  assert.equal(integrationPrepareLabel(descriptor, partial), '补全接入');
+  assert.equal(integrationPrepareLabel(descriptor), '检查状态后接入');
+  assert.equal(
+    integrationPrepareLabel(descriptor, { ...partial, requirementsMet: false }),
+    '前置条件待处理',
+  );
+  assert.equal(
+    integrationPrepareLabel(descriptor, { ...partial, compatible: false }),
+    '当前工具暂不支持',
+  );
+  assert.equal(integrationPreparedNotice(descriptor, partial).error, true);
+  assert.equal(integrationLabel(descriptor, partial), '需要处理');
+  const configured = {
+    ...partial,
+    usable: true,
+    addonReady: true,
+    relatedMcp: { id: 'blender', configured: true, runtimeReady: true, state: 'managed' },
+    readiness: {
+      state: 'configured',
+      checks: [
+        {
+          id: 'software-service',
+          state: 'unverified',
+          title: 'Blender 服务',
+          message: '请在 Blender 中启动服务',
+        },
+      ],
+    },
+  } as IntegrationEntry;
+  assert.equal(integrationCanPrepare(descriptor, configured), false);
+  assert.equal(integrationCanPrepare(descriptor, { ...configured, addonReady: false }), true);
+  assert.equal(integrationLabel(descriptor, { ...configured, addonReady: false }), '待软件内操作');
+  const notice = integrationPreparedNotice(descriptor, configured);
+  assert.equal(notice.error, undefined);
+  assert.match(notice.text, /Skill、MCP 运行环境/);
+  assert.match(notice.text, /启动服务/);
+  assert.match(notice.text, /首次实际调用验证/);
+  assert.equal(
+    integrationCanPrepare(descriptor, {
+      ...partial,
+      relatedMcp: { ...partial.relatedMcp!, state: 'changed' },
+    }),
+    false,
+  );
+  assert.equal(
+    integrationCanPrepare(descriptor, {
+      ...partial,
+      relatedMcp: { ...partial.relatedMcp!, state: 'conflict' },
+    }),
+    false,
+  );
+  assert.equal(integrationCanPrepare(descriptor, { ...partial, compatible: false }), false);
+});
+
+test('Blender one-click tutorial replaces cached manual setup instructions but preserves other software guides', () => {
+  const blender = {
+    id: 'blender',
+    skillId: 'blender-director',
+    relatedMcpId: 'blender',
+    minimumVersion: '3.0',
+    steps: ['Run uvx setup'],
+  } as IntegrationDescriptor;
+  const steps = integrationSetupSteps(blender);
+  assert.equal(steps.length, 4);
+  assert.match(steps[1].description, /独立 Python 与 MCP 依赖/);
+  assert.match(steps[2].description, /启用/);
+  assert.match(steps[2].description, /按 N/);
+  assert.match(steps[2].description, /Connect to MCP server/);
+  assert.match(steps[2].description, /仅勾选插件不会启动服务/);
+  assert.match(steps[3].description, /实际连通/);
+  assert.equal(
+    steps.some((step) => step.description.includes('Run uvx setup')),
+    false,
+  );
+  assert.equal(integrationSetupSteps({ ...blender, id: 'other' })[0].description, 'Run uvx setup');
+});
+
+test('Blender live status changes without claiming a first task or another workspace is verified', () => {
+  const descriptor = { skillId: 'example', relatedMcpId: 'blender' } as IntegrationDescriptor;
+  const view = {
+    workspace: 'codex',
+    entries: [
+      {
+        id: 'blender',
+        mcpRevision: 'config-1',
+        registered: true,
+        usable: true,
+        addonReady: true,
+        health: { ready: true },
+        relatedMcp: { id: 'blender', configured: true, runtimeReady: true },
+        service: { state: 'unverified', message: '正在检测', checkedAt: 0 },
+        readiness: {
+          state: 'configured',
+          checks: [
+            {
+              id: 'software-service',
+              title: 'Blender 服务连接',
+              state: 'unverified',
+              message: '正在检测',
+            },
+            { id: 'first-use', title: '首次任务', state: 'unverified', message: '实际任务待验证' },
+          ],
+        },
+      },
+    ],
+  } as IntegrationView;
+  const response: IntegrationServicesView = {
+    workspace: 'codex',
+    entries: [
+      {
+        id: 'blender',
+        mcpRevision: 'config-1',
+        service: { state: 'connected', message: '已收到 pong', checkedAt: 1234 },
+      },
+    ],
+  };
+  const next = integrationServiceView(view, response);
+  const entry = next.entries[0];
+  assert.equal(entry.service?.state, 'connected');
+  assert.equal(entry.readiness?.checks[0].state, 'ready');
+  assert.equal(entry.readiness?.checks[1].state, 'unverified');
+  assert.equal(entry.readiness?.state, 'configured');
+  assert.equal(integrationLabel(descriptor, entry), '服务已连接 · 待任务验证');
+  assert.equal(integrationCanPrepare(descriptor, entry), false);
+  assert.equal(view.entries[0].service?.state, 'unverified');
+  assert.equal(integrationServiceView(view, { ...response, workspace: 'claude' }), view);
+  const changed = integrationServiceView(next, {
+    ...response,
+    entries: [{ ...response.entries[0], mcpRevision: 'config-2' }],
+  });
+  assert.equal(changed.entries[0].service?.state, 'unverified');
+  assert.equal(changed.entries[0].readiness?.checks[0].state, 'unverified');
+  assert.match(changed.entries[0].service!.message, /配置已变化/);
+  for (const state of ['waiting', 'timeout', 'invalid-response'] as const) {
+    const stopped = integrationServiceView(next, {
+      ...response,
+      entries: [{ ...response.entries[0], service: { state, message: state, checkedAt: 1235 } }],
+    });
+    assert.equal(stopped.entries[0].readiness?.checks[0].state, 'unverified');
+    assert.equal(stopped.entries[0].readiness?.checks[1].state, 'unverified');
+    assert.equal(stopped.entries[0].service?.state, state);
+    if (state === 'waiting')
+      assert.equal(integrationLabel(descriptor, stopped.entries[0]), '等待启动 Blender 服务');
+  }
+  assert.equal(integrationServiceFailure(next, '检测失败').entries[0].service?.state, 'unverified');
 });
 
 test('inherited Skills are visible without granting management from another workspace', () => {
@@ -289,6 +461,19 @@ test('inherited Skills are visible without granting management from another work
   assert.equal(canManageInstallation(inherited, 'opencode'), false);
   assert.equal(canManageInstallation(inherited, 'claude'), true);
   assert.equal(canManageInstallation({ ...inherited, managed: false }, 'claude'), false);
+  const local = { ...inherited, managed: false, removable: true };
+  assert.equal(canRemoveInstallation(local, 'claude'), true);
+  assert.equal(canManageInstallation(local, 'claude'), false);
+  assert.equal(canRemoveInstallation(local, 'opencode'), false);
+  assert.equal(canRemoveInstallation({ ...local, exists: false }, 'claude'), false);
+  assert.equal(canRemoveInstallation({ ...local, removable: false }, 'claude'), false);
+  assert.equal(
+    canRemoveInstallation({ ...local, removalBlockedReason: '系统内置 Skill 受保护' }, 'claude'),
+    false,
+  );
+  // Older backends must never grant local deletion just from managed: false.
+  assert.equal(canRemoveInstallation({ ...inherited, managed: false }, 'claude'), false);
+  assert.equal(canRemoveInstallation(inherited, 'claude'), true);
   assert.equal(visibleInWorkspace({ record, exists: true }, 'claude'), true);
   assert.equal(visibleInWorkspace({ record, exists: true }, 'opencode'), false);
 });

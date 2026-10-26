@@ -37,6 +37,17 @@ struct Store {
 static STORE: OnceLock<Store> = OnceLock::new();
 static SECRETS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 thread_local! { static OPERATION: RefCell<Option<String>> = const { RefCell::new(None) }; }
+#[cfg(test)]
+thread_local! { static CAPTURE: RefCell<Option<Vec<(String, String, String)>>> = const { RefCell::new(None) }; }
+
+/// Capture this thread only, without initializing persistent logs or changing
+/// the logging destination of concurrently running tests.
+#[cfg(test)]
+pub(crate) fn capture_events(f: impl FnOnce()) -> Vec<(String, String, String)> {
+    CAPTURE.with(|capture| *capture.borrow_mut() = Some(Vec::new()));
+    f();
+    CAPTURE.with(|capture| capture.borrow_mut().take().unwrap())
+}
 
 pub fn now() -> u64 {
     SystemTime::now()
@@ -264,6 +275,12 @@ pub fn initialize() {
 }
 
 pub fn event(level: &str, source: &str, message: impl AsRef<str>) {
+    #[cfg(test)]
+    CAPTURE.with(|capture| {
+        if let Some(events) = capture.borrow_mut().as_mut() {
+            events.push((level.into(), source.into(), message.as_ref().into()));
+        }
+    });
     let Some(store) = STORE.get() else {
         return;
     };

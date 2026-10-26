@@ -9,9 +9,16 @@ import {
   pathKey,
 } from '../src/features/skills/collections.ts';
 import type { CatalogSkill, InstalledSkill } from '../src/features/skills/collections.ts';
-import { installCollection, isCollectionCancelled, previewCollection } from '../src/features/skills/collection-install.ts';
+import {
+  installCollection,
+  isCollectionCancelled,
+  previewCollection,
+} from '../src/features/skills/collection-install.ts';
 import type { CollectionCall } from '../src/features/skills/collection-install.ts';
-import { removeCollectionEntries } from '../src/features/skills/collection-run.ts';
+import {
+  removableCollectionEntries,
+  removeCollectionEntries,
+} from '../src/features/skills/collection-run.ts';
 import type { NativePlan, NativeRecord, ServerSkill, SkillGroup } from '../src/lib/api/native.ts';
 
 const location = { target: 'codex', scope: 'global', projectPath: '' } as const;
@@ -83,7 +90,10 @@ const plan = (path: string, overrides: Partial<NativePlan> = {}): NativePlan => 
 test('the published Nature catalog becomes one suite and retains every module', async (t) => {
   const catalogFile = new URL('../../server/data/catalog.json', import.meta.url);
   // The private server project is not published. Skip when its data files are absent.
-  const missing = await stat(catalogFile).then(() => false, () => true);
+  const missing = await stat(catalogFile).then(
+    () => false,
+    () => true,
+  );
   if (missing) return t.skip('跳过：没有本地准备的私有服务端数据');
   const catalog = JSON.parse(await readFile(catalogFile, 'utf8'));
   const entries: CatalogSkill[] = catalog.skills.map((skill: ServerSkill) => ({
@@ -407,6 +417,7 @@ test('a removal stops at the first failure and keeps the moved modules', async (
   const calls: string[] = [];
   const outcome = await removeCollectionEntries({
     entries: [installed(entry('nature-reader')), installed(entry('nature-figure'))],
+    workspace: 'codex',
     call: async <T>(_action: string, options?: Record<string, unknown>) => {
       calls.push(options!.recordId);
       if (options!.recordId === 'record-nature-reader') throw new Error('file is in use');
@@ -427,6 +438,7 @@ test('a cancelled removal leaves the remaining modules in place', async () => {
   await assert.rejects(
     removeCollectionEntries({
       entries: [installed(entry('nature-reader')), installed(entry('nature-figure'))],
+      workspace: 'codex',
       call: async <T>(_action: string, options?: Record<string, unknown>) => {
         calls.push(options!.recordId);
         controller.abort();
@@ -438,4 +450,127 @@ test('a cancelled removal leaves the remaining modules in place', async () => {
     (error: unknown) => isCollectionCancelled(error),
   );
   assert.deepEqual(calls, ['record-nature-reader']);
+});
+
+test('all 23 locally installed suite modules are eligible and use confirmed local removal paths', async () => {
+  const entries = Array.from({ length: 23 }, (_, index) => ({
+    ...installed(entry(`nature-module-${index}`), {}, false),
+    removable: true,
+  }));
+  assert.equal(removableCollectionEntries(entries, 'codex').length, 23);
+  const calls: { action: string; options?: Record<string, unknown> }[] = [];
+  const progress: number[] = [];
+  const outcome = await removeCollectionEntries({
+    entries,
+    workspace: 'codex',
+    call: async <T>(action: string, options?: Record<string, unknown>) => {
+      calls.push({ action, options });
+      return {} as T;
+    },
+    signal: new AbortController().signal,
+    onProgress: (update) => progress.push(update.total),
+  });
+  assert.equal(outcome.removed, 23);
+  assert.deepEqual(
+    outcome.removedIds,
+    entries.map(({ record }) => record.id),
+  );
+  assert.deepEqual(
+    calls,
+    entries.map(({ record }) => ({
+      action: 'remove-local',
+      options: { recordId: record.id, installationPath: record.path },
+    })),
+  );
+  assert.ok(progress.every((total) => total === 23));
+});
+
+test('mixed suite removal includes local modules but never writes protected, missing or inherited entries', async () => {
+  const managed = installed(entry('managed'));
+  const local = { ...installed(entry('local'), {}, false), removable: true };
+  const retained = [
+    {
+      ...local,
+      record: { ...local.record, id: 'system' },
+      removalBlockedReason: '系统内置 Skill 受保护',
+    },
+    { ...local, record: { ...local.record, id: 'missing' }, exists: false },
+    { ...local, record: { ...local.record, id: 'inherited', target: 'claude' as const } },
+    { ...local, record: { ...local.record, id: 'blocked' }, removable: false },
+    { ...local, record: { ...local.record, id: 'old-backend' }, removable: undefined },
+    { ...managed, record: { ...managed.record, id: 'protected-managed' }, removable: false },
+  ];
+  const entries = [managed, local, ...retained];
+  assert.deepEqual(removableCollectionEntries(entries, 'codex'), [managed, local]);
+  const calls: { action: string; options?: Record<string, unknown> }[] = [];
+  const outcome = await removeCollectionEntries({
+    entries,
+    workspace: 'codex',
+    call: async <T>(action: string, options?: Record<string, unknown>) => {
+      calls.push({ action, options });
+      return {} as T;
+    },
+    signal: new AbortController().signal,
+    onProgress: () => {},
+  });
+  assert.equal(outcome.removed, 2);
+  assert.deepEqual(calls, [
+    { action: 'remove', options: { recordId: managed.record.id } },
+    {
+      action: 'remove-local',
+      options: { recordId: local.record.id, installationPath: local.record.path },
+    },
+  ]);
+});
+
+test('a local removal failure preserves completed modules and stops before the next module', async () => {
+  const entries = ['first', 'locked', 'later'].map((id) => ({
+    ...installed(entry(id), {}, false),
+    removable: true,
+  }));
+  const calls: string[] = [];
+  const outcome = await removeCollectionEntries({
+    entries,
+    workspace: 'codex',
+    call: async <T>(action: string, options?: Record<string, unknown>) => {
+      assert.equal(action, 'remove-local');
+      calls.push(options!.recordId);
+      if (options!.recordId === entries[1].record.id) throw new Error('file is in use');
+      return {} as T;
+    },
+    signal: new AbortController().signal,
+    onProgress: () => {},
+  });
+  assert.equal(outcome.removed, 1);
+  assert.deepEqual(outcome.removedIds, [entries[0].record.id]);
+  assert.equal(outcome.failed!.title, 'locked');
+  assert.deepEqual(
+    calls,
+    entries.slice(0, 2).map(({ record }) => record.id),
+  );
+});
+
+test('cancelling a local batch leaves later modules untouched', async () => {
+  const controller = new AbortController();
+  const calls: string[] = [];
+  const entries = ['first', 'later'].map((id) => ({
+    ...installed(entry(id), {}, false),
+    removable: true,
+  }));
+  await assert.rejects(
+    removeCollectionEntries({
+      entries,
+      workspace: 'codex',
+      call: async <T>(action: string, options?: Record<string, unknown>) => {
+        assert.equal(action, 'remove-local');
+        calls.push(options!.recordId);
+        controller.abort();
+        return {} as T;
+      },
+      signal: controller.signal,
+      onProgress: () => {},
+    }),
+    (error: unknown) => isCollectionCancelled(error),
+  );
+  assert.deepEqual(calls, [entries[0].record.id]);
 });

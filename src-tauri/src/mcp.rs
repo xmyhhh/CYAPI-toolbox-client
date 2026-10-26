@@ -2,8 +2,8 @@
 //!
 //! The server only describes installable MCP servers. Every local check and
 //! write happens here, scoped to the selected Codex / Claude Code / OpenCode
-//! workspace. Writes preserve unrelated keys and comments, and removal requires
-//! a matching receipt so an externally edited entry is never silently removed.
+//! workspace. Writes preserve unrelated keys and comments. Direct user actions
+//! use entry revisions and backups; integrations also require matching receipts.
 use crate::configuration::{no_links, stage};
 use jsonc_parser::cst::{CstInputValue, CstObject, CstRootNode};
 use jsonc_parser::ParseOptions;
@@ -496,7 +496,7 @@ fn write_local(data: &Path, entries: &[Descriptor]) -> Result<()> {
 /// The merged entries with the local port and token resolved.
 fn resolved_servers(data: &Path, context: &Context) -> Result<Vec<Descriptor>> {
     let (catalog, _) = available_catalog(data);
-    let mut catalog = resolved_catalog(context, catalog);
+    let mut catalog = resolved_catalog(data, context, catalog);
     for local in local_entries(data)? {
         if !catalog.servers.iter().any(|server| server.id == local.id) {
             catalog.servers.push(local);
@@ -943,11 +943,44 @@ fn json_entries(doc: &Value, workspace: &str) -> Vec<LocalEntry> {
     entries
 }
 
-fn require_unique(entry: &LocalEntry) -> Result<()> {
+/// Runtime-owned, ambiguous and unrecognized entries stay read-only, even if
+/// a receipt exists. Ordinary local entries do not need a catalog or receipt.
+fn read_only_reason(entry: &LocalEntry, workspace: &str) -> Option<&'static str> {
     if entry.duplicate {
-        return Err("同名 MCP 同时存在于 mcp 和 mcp.servers，请先在配置文件中合并重复项".into());
+        return Some("同名 MCP 同时存在于 mcp 和 mcp.servers，请先在配置文件中合并重复项");
     }
-    Ok(())
+    let runtime_command = entry
+        .value
+        .get("command")
+        .and_then(Value::as_str)
+        .and_then(|command| command.rsplit(['/', '\\']).next())
+        .is_some_and(|name| {
+            name.eq_ignore_ascii_case("node_repl") || name.eq_ignore_ascii_case("node_repl.exe")
+        });
+    if workspace == "codex" && (entry.name == "node_repl" || runtime_command) {
+        return Some("由 Codex 运行时管理，请在 Codex 中操作。");
+    }
+    let recognized = match entry.transport.as_str() {
+        "http" => entry
+            .value
+            .get("url")
+            .and_then(Value::as_str)
+            .is_some_and(|url| !url.trim().is_empty()),
+        "stdio" => command_parts(&entry.value, workspace)
+            .is_some_and(|(command, _)| !command.trim().is_empty()),
+        _ => false,
+    };
+    if !recognized {
+        return Some("配置格式无法识别，请在原配置文件中检查。");
+    }
+    None
+}
+
+fn require_editable(entry: &LocalEntry, workspace: &str) -> Result<()> {
+    match read_only_reason(entry, workspace) {
+        Some(reason) => Err(reason.into()),
+        None => Ok(()),
+    }
 }
 
 fn entries(snapshot: &Snapshot, workspace: &str) -> Result<Vec<LocalEntry>> {
@@ -1091,11 +1124,15 @@ fn resolved_descriptor(context: &Context, descriptor: &Descriptor) -> Descriptor
     descriptor
 }
 
-fn resolved_catalog(context: &Context, mut catalog: Catalog) -> Catalog {
+fn resolved_catalog(data: &Path, context: &Context, mut catalog: Catalog) -> Catalog {
     catalog.servers = catalog
         .servers
         .iter()
-        .map(|descriptor| resolved_descriptor(context, descriptor))
+        .map(|descriptor| {
+            let mut descriptor = resolved_descriptor(context, descriptor);
+            crate::blender_runtime::resolve(data, &mut descriptor);
+            descriptor
+        })
         .collect();
     catalog
 }
@@ -1184,6 +1221,18 @@ fn token_matches(
 }
 
 fn receipt_path(data: &Path, workspace: &str, name: &str) -> PathBuf {
+    // Existing configuration keys may contain spaces, underscores or path
+    // separators. Never interpret them as paths in the receipt directory.
+    let safe_name = !name.is_empty()
+        && name.len() <= 128
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    let name = if safe_name {
+        name.to_string()
+    } else {
+        format!("key~{}", crate::service::hash(name.as_bytes()))
+    };
     data.join("mcp/receipts")
         .join(format!("{workspace}-{name}.json"))
 }
@@ -1648,6 +1697,8 @@ fn status_for(
         .is_some_and(|(entry, receipt)| !entry.duplicate && entry.hash == receipt.hash);
     let modified = local_entry.is_some() && receipt.is_some() && !managed;
     let core = local_entry.is_some_and(|entry| core_matches(entry, descriptor, workspace));
+    let legacy_blender =
+        local_entry.is_some_and(|entry| legacy_blender_matches(data, entry, descriptor, workspace));
     let token_ok = local_entry
         .is_some_and(|entry| token_matches(entry, descriptor, workspace, token.as_deref()));
     let recognized = core && (!needs_local_token(descriptor, workspace) || token_ok);
@@ -1666,6 +1717,10 @@ fn status_for(
         "managed"
     } else if modified {
         "changed"
+    } else if !core && legacy_blender {
+        // The old uvx command can be migrated, but is not the prepared command
+        // yet (uvx might not even be installed in this workspace's PATH).
+        "stale"
     } else if !core {
         "conflict"
     } else if recognized {
@@ -1674,8 +1729,11 @@ fn status_for(
         // Same target, but the credential no longer matches.
         "stale"
     };
-    let can_install = matches!(state, "absent" | "managed" | "stale");
-    let can_adopt = matches!(state, "adoptable" | "changed");
+    let read_only = local_entry.is_some_and(|entry| read_only_reason(entry, workspace).is_some());
+    let can_install = !read_only && matches!(state, "absent" | "managed" | "stale");
+    let can_adopt = !read_only && matches!(state, "adoptable" | "changed");
+    let can_manage =
+        compatible && local_entry.is_some_and(|entry| read_only_reason(entry, workspace).is_none());
     Ok(json!({
         "id": descriptor.id,
         "state": state,
@@ -1695,9 +1753,9 @@ fn status_for(
         "tokenAvailable": token_available,
         "canInstall": can_install,
         "canAdopt": can_adopt,
-        "canRemove": state == "managed",
-        "canEnable": workspace != "claude" && state == "managed" && !local_entry.is_some_and(|entry| entry.enabled),
-        "canDisable": workspace != "claude" && state == "managed" && local_entry.is_some_and(|entry| entry.enabled),
+        "canRemove": can_manage,
+        "canEnable": workspace != "claude" && can_manage && !local_entry.is_some_and(|entry| entry.enabled),
+        "canDisable": workspace != "claude" && can_manage && local_entry.is_some_and(|entry| entry.enabled),
         "transport": match &descriptor.transport {
             Transport::Stdio { .. } => "stdio",
             Transport::Http { .. } => "http",
@@ -1730,7 +1788,7 @@ pub fn view(data: &Path, context: &Context, workspace: &str) -> Result<Value> {
         .map(|entry| entry.id)
         .collect();
     let (catalog, catalog_error) = available_catalog(data);
-    let mut catalog = resolved_catalog(context, catalog);
+    let mut catalog = resolved_catalog(data, context, catalog);
     // The entries the user defined on this machine join the served catalog.
     for local in local_entries(data)? {
         if !catalog.servers.iter().any(|server| server.id == local.id) {
@@ -1769,6 +1827,7 @@ pub fn view(data: &Path, context: &Context, workspace: &str) -> Result<Value> {
                 "target": entry.target,
                 "enabled": entry.enabled,
                 "managed": managed,
+                "readOnlyReason": read_only_reason(entry, workspace),
                 "catalogId": catalog_id,
                 "duplicate": entry.duplicate,
                 "revision": entry_revision(&local, current.path(), &entry.name),
@@ -1800,6 +1859,48 @@ pub fn entry_revision_for(context: &Context, workspace: &str, key: &str) -> Resu
     Ok(entry_revision(&local, current.path(), key))
 }
 
+/// Read only the selected workspace's Blender endpoint; never start its command
+/// or return unrelated environment variables / credentials to the frontend.
+pub fn blender_service_endpoint(
+    context: &Context,
+    workspace: &str,
+    key: &str,
+) -> Result<(String, Result<crate::blender_service::Endpoint>)> {
+    let workspace = valid_workspace(workspace)?;
+    let current = snapshot(context, workspace)?;
+    let local = entries(&current, workspace)?;
+    let revision = entry_revision(&local, current.path(), key);
+    let endpoint = (|| {
+        let entry = local
+            .iter()
+            .find(|entry| entry.name == key)
+            .ok_or("请先一键接入，写入当前 AI 工具的 Blender MCP 配置")?;
+        if !entry.enabled || entry.duplicate {
+            return Err("Blender MCP 配置未启用或存在重复定义，请在 MCP 管理中检查".into());
+        }
+        if entry.transport != "stdio" {
+            return Err("当前 Blender MCP 不是本地启动配置，无法自动检测插件服务".into());
+        }
+        let (command, args) =
+            command_parts(&entry.value, workspace).ok_or("无法读取 Blender MCP 启动命令")?;
+        let environment = if workspace == "opencode" {
+            "environment"
+        } else {
+            "env"
+        };
+        crate::blender_service::Endpoint::from_command(command, &args, |name| {
+            entry
+                .value
+                .get(environment)
+                .and_then(|value| value.get(name))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| std::env::var(name).ok())
+        })
+    })();
+    Ok((revision, endpoint))
+}
+
 pub fn install(
     data: &Path,
     context: &Context,
@@ -1813,6 +1914,29 @@ pub fn install(
         .find(|descriptor| descriptor.id == id)
         .ok_or("未找到 MCP 服务")?;
     install_descriptor(data, context, workspace, &descriptor, revision)
+}
+
+fn legacy_blender_matches(
+    data: &Path,
+    entry: &LocalEntry,
+    descriptor: &Descriptor,
+    workspace: &str,
+) -> bool {
+    catalog(data)
+        .ok()
+        .and_then(|catalog| {
+            catalog.servers.into_iter().find(|original| {
+                crate::blender_runtime::supported(original) && original.id == descriptor.id
+            })
+        })
+        .is_some_and(|original| {
+            core_matches(entry, &original, workspace)
+                && crate::blender_runtime::command(data).is_some_and(|path| {
+                    matches!(&descriptor.transport,
+                Transport::Stdio { command, args, .. } if *command == path.to_string_lossy()
+                    && args == &["-I", "-m", "blender_mcp.server"])
+                })
+        })
 }
 
 /// Install a descriptor that did not come from the MCP catalog, for example a
@@ -1838,14 +1962,17 @@ pub fn install_descriptor(
         .find(|entry| entry.name == config_key(descriptor));
     let receipt = read_receipt(data, workspace, current.path(), config_key(descriptor))?;
     if let Some(entry) = existing {
-        require_unique(entry)?;
+        require_editable(entry, workspace)?;
         if receipt
             .as_ref()
             .is_some_and(|receipt| receipt.hash != entry.hash)
         {
             return Err("MCP 配置已在外部修改，请先手动检查或移除".into());
         }
-        if receipt.is_none() && !core_matches(entry, descriptor, workspace) {
+        // Permit the catalog's legacy uvx command to migrate to the prepared
+        // Blender environment, never a different user command with the same name.
+        let legacy_blender = legacy_blender_matches(data, entry, descriptor, workspace);
+        if receipt.is_none() && !core_matches(entry, descriptor, workspace) && !legacy_blender {
             return Err("已存在同名 MCP 配置，请先检查配置内容".into());
         }
     }
@@ -1914,7 +2041,7 @@ pub fn adopt_descriptor(
         .iter()
         .find(|entry| entry.name == config_key(descriptor))
         .ok_or("本机没有可接管的 MCP 配置")?;
-    require_unique(entry)?;
+    require_editable(entry, workspace)?;
     let token = descriptor_token(context, descriptor)?;
     if !core_matches(entry, descriptor, workspace)
         || !token_matches(entry, descriptor, workspace, token.as_deref())
@@ -1938,10 +2065,10 @@ pub fn remove(
     revision: &str,
 ) -> Result<()> {
     let workspace = valid_workspace(workspace)?;
-    remove_key(data, context, workspace, id, revision)
+    remove_key_inner(data, context, workspace, id, revision, true)
 }
 
-/// Remove the entry that uses the given configuration key.
+/// Integration removal still requires its own unchanged management receipt.
 pub fn remove_key(
     data: &Path,
     context: &Context,
@@ -1950,6 +2077,17 @@ pub fn remove_key(
     revision: &str,
 ) -> Result<()> {
     let workspace = valid_workspace(workspace)?;
+    remove_key_inner(data, context, workspace, id, revision, false)
+}
+
+fn remove_key_inner(
+    data: &Path,
+    context: &Context,
+    workspace: &str,
+    id: &str,
+    revision: &str,
+    direct: bool,
+) -> Result<()> {
     let current = snapshot(context, workspace)?;
     let local = entries(&current, workspace)?;
     if entry_revision(&local, current.path(), id) != revision {
@@ -1957,15 +2095,15 @@ pub fn remove_key(
     }
     let entry = local.iter().find(|entry| entry.name == id);
     let receipt = read_receipt(data, workspace, current.path(), id)?;
-    let Some(receipt) = receipt else {
-        return Err("此 MCP 由外部配置管理，需先接管后才能移除".into());
-    };
+    if !direct && receipt.is_none() {
+        return Err("此 MCP 不属于当前接入，请在 MCP 管理中移除接入".into());
+    }
     let Some(entry) = entry else {
         delete_receipt(data, workspace, id)?;
         return Ok(());
     };
-    require_unique(entry)?;
-    if receipt.hash != entry.hash {
+    require_editable(entry, workspace)?;
+    if !direct && receipt.is_some_and(|receipt| receipt.hash != entry.hash) {
         return Err("MCP 配置已在外部修改，已保留配置，请手动检查".into());
     }
     let bytes = remove_entry(&current, workspace, entry.layout, id)?;
@@ -1974,8 +2112,7 @@ pub fn remove_key(
     delete_receipt(data, workspace, id)
 }
 
-/// Flip the enable flag of an entry the toolbox manages, leaving everything
-/// else in the configuration untouched.
+/// Flip only the enable flag, leaving everything else in the entry untouched.
 fn flip_enabled(
     snapshot: &Snapshot,
     workspace: &str,
@@ -2052,14 +2189,7 @@ pub fn toggle_enabled(
         .iter()
         .find(|entry| entry.name == id)
         .ok_or("本机没有此 MCP 配置")?;
-    require_unique(entry)?;
-    let receipt = read_receipt(data, workspace, current.path(), id)?;
-    let Some(receipt) = receipt else {
-        return Err("此 MCP 由外部配置管理，需先接管后才能修改".into());
-    };
-    if receipt.hash != entry.hash {
-        return Err("MCP 配置已在外部修改，已保留配置，请手动检查".into());
-    }
+    require_editable(entry, workspace)?;
     let bytes = flip_enabled(&current, workspace, entry.layout, id, enabled)?;
     let next = next_snapshot(&current, bytes);
     let new_hash = entries(&next, workspace)?
@@ -2131,6 +2261,150 @@ mod tests {
     }
 
     #[test]
+    fn blender_probe_reads_workspace_command_and_environment_without_writing_or_exposing_secrets() {
+        let (base, context) = fixture();
+        fs::write(
+            &context.codex_config,
+            r#"
+[mcp_servers.blender]
+command = "uvx"
+args = ["mcp-for-blender", "--port", "8765"]
+env = { BLENDER_HOST = "127.0.0.2", BLENDER_PORT = "9000", SECRET = "not-for-probes" }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &context.claude_config,
+            serde_json::to_vec(&json!({"mcpServers":{"blender":{
+                "command":"python","args":["-I","-m","blender_mcp.server"],
+                "env":{"BLENDER_HOST":"127.0.0.3","BLENDER_PORT":"8766","SECRET":"not-for-probes"}
+            }}}))
+            .unwrap(),
+        )
+        .unwrap();
+        let path = context.opencode_config.resolve().unwrap();
+        for nested in [false, true] {
+            let entry = json!({"command":["uvx","mcp-for-blender"],"environment":{"BLENDER_HOST":"127.0.0.4","BLENDER_PORT":"8767","SECRET":"not-for-probes"}});
+            fs::write(
+                &path,
+                serde_json::to_vec(&if nested {
+                    json!({"mcp":{"servers":{"blender":entry}}})
+                } else {
+                    json!({"mcp":{"blender":entry}})
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            for (workspace, host, port) in [
+                ("codex", "127.0.0.2", 8765),
+                ("claude", "127.0.0.3", 8766),
+                ("opencode", "127.0.0.4", 8767),
+            ] {
+                let current = snapshot(&context, workspace).unwrap();
+                let (rev, endpoint) =
+                    blender_service_endpoint(&context, workspace, "blender").unwrap();
+                assert_eq!(rev, revision(&context, workspace, "blender"));
+                let endpoint = endpoint.unwrap();
+                assert_eq!(endpoint.host, host);
+                assert_eq!(endpoint.port, port);
+                assert_eq!(
+                    snapshot(&context, workspace).unwrap().bytes(),
+                    current.bytes()
+                );
+                assert!(!format!("{endpoint:?}").contains("SECRET"));
+            }
+        }
+        fs::write(
+            &path,
+            br#"{"mcp":{"blender":{"command":["uvx","mcp-for-blender"],"enabled":false}}}"#,
+        )
+        .unwrap();
+        assert!(blender_service_endpoint(&context, "opencode", "blender")
+            .unwrap()
+            .1
+            .unwrap_err()
+            .contains("未启用"));
+        fs::write(&path, br#"{"mcp":{"blender":{"command":["uvx","mcp-for-blender"]},"servers":{"blender":{"command":["uvx","mcp-for-blender"]}}}}"#).unwrap();
+        assert!(blender_service_endpoint(&context, "opencode", "blender")
+            .unwrap()
+            .1
+            .unwrap_err()
+            .contains("重复定义"));
+        fs::write(&context.codex_config, "[mcp_servers]").unwrap();
+        assert!(blender_service_endpoint(&context, "codex", "blender")
+            .unwrap()
+            .1
+            .unwrap_err()
+            .contains("一键接入"));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn managed_blender_commands_remain_recognized_in_both_pages_and_keep_user_settings() {
+        let (base, context) = fixture();
+        let data = base.join("data");
+        let descriptor: Descriptor = serde_json::from_value(json!({
+            "id":"blender","name":"Blender MCP","version":"2.2.4","description":"test","homepage":"https://example.com/",
+            "transport":{"type":"stdio","command":"uvx","args":["mcp-for-blender"]},"workspaces":WORKSPACES
+        })).unwrap();
+        let mut catalog = catalog(&data).unwrap();
+        catalog.servers.push(descriptor.clone());
+        cache(&data, &serde_json::to_vec(&catalog).unwrap()).unwrap();
+        let environment = uuid::Uuid::new_v4().to_string();
+        fs::create_dir_all(data.join("mcp/runtime/blender")).unwrap();
+        fs::write(
+            data.join("mcp/runtime/blender/ready.json"),
+            serde_json::to_vec(&json!({"version":"2.2.4","environment":environment})).unwrap(),
+        )
+        .unwrap();
+        let mut resolved = descriptor.clone();
+        crate::blender_runtime::resolve(&data, &mut resolved);
+        for workspace in WORKSPACES {
+            // An existing catalog uvx config is migratable, even before adoption.
+            let rev = revision(&context, workspace, "blender");
+            install_descriptor(&data, &context, workspace, &descriptor, &rev).unwrap();
+            delete_receipt(&data, workspace, "blender").unwrap();
+            let before = descriptor_status(&data, &context, workspace, &resolved).unwrap();
+            assert_eq!(before["recognized"], false);
+            assert_eq!(before["state"], "stale");
+            assert_eq!(before["canInstall"], true);
+            install(
+                &data,
+                &context,
+                workspace,
+                "blender",
+                before["revision"].as_str().unwrap(),
+            )
+            .unwrap();
+            let after = view(&data, &context, workspace).unwrap();
+            let entry = after["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["id"] == "blender")
+                .unwrap();
+            assert_eq!(entry["managed"], true);
+            assert_eq!(entry["recognized"], true);
+            assert_eq!(entry["enabled"], true);
+            let direct = descriptor_status(&data, &context, workspace, &resolved).unwrap();
+            assert_eq!(entry["revision"], direct["revision"]);
+        }
+        // External edits after preparation remain protected.
+        fs::write(
+            &context.codex_config,
+            "# keep\n[mcp_servers.blender]\ncommand='my-blender'\n",
+        )
+        .unwrap();
+        let original = fs::read(&context.codex_config).unwrap();
+        let rev = revision(&context, "codex", "blender");
+        assert!(install(&data, &context, "codex", "blender", &rev)
+            .unwrap_err()
+            .contains("外部修改"));
+        assert_eq!(fs::read(&context.codex_config).unwrap(), original);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn local_views_work_without_a_catalog_and_keep_workspaces_separate() {
         let (base, context) = fixture();
         let data = base.join("data");
@@ -2159,6 +2433,7 @@ mod tests {
             assert_eq!(current["local"].as_array().unwrap().len(), 1);
             assert_eq!(current["local"][0]["name"], format!("{workspace}-only"));
             assert_eq!(current["local"][0]["managed"], false);
+            assert_eq!(current["local"][0]["readOnlyReason"], Value::Null);
         }
         // A malformed catalog must not hide valid local configurations either.
         fs::write(data.join("mcp/catalog.json"), "invalid").unwrap();
@@ -2166,6 +2441,220 @@ mod tests {
             view(&data, &context, "codex").unwrap()["local"][0]["name"],
             "codex-only"
         );
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn directly_manages_external_entries_offline_and_backs_up_original_bytes() {
+        let (base, context) = fixture();
+        let data = base.join("data");
+        fs::remove_file(data.join("mcp/catalog.json")).unwrap();
+        // Arbitrary keys must remain data, never paths in the receipt folder.
+        let key = "../personal_MCP";
+        for workspace in WORKSPACES {
+            let original = match workspace {
+                "codex" => format!(
+                    "# keep\nmodel = 'personal'\n[mcp_servers.\"{key}\"]\ncommand = 'custom-tool'\nargs = ['--serve']\ncwd = 'personal'\n[mcp_servers.\"{key}\".env]\nSECRET = 'keep-secret'\n[mcp_servers.unrelated]\ncommand = 'keep'\n"
+                ),
+                "claude" => format!(
+                    "// keep\n{{\"theme\":\"personal\",\"mcpServers\":{{\"{key}\":{{\"command\":\"custom-tool\",\"args\":[\"--serve\"],\"env\":{{\"SECRET\":\"keep-secret\"}}}},\"unrelated\":{{\"command\":\"keep\"}}}}}}\n"
+                ),
+                _ => format!(
+                    "// keep\n{{\"theme\":\"personal\",\"mcp\":{{\"servers\":{{\"{key}\":{{\"type\":\"remote\",\"url\":\"https://example.com/mcp\",\"headers\":{{\"Authorization\":\"Bearer keep-secret\"}},\"oauth\":false}},\"unrelated\":{{\"type\":\"local\",\"command\":[\"keep\"]}}}}}}}}\n"
+                ),
+            };
+            let path = snapshot(&context, workspace).unwrap().path().to_path_buf();
+            fs::write(&path, &original).unwrap();
+            let before = view(&data, &context, workspace).unwrap();
+            let entry = before["local"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["name"] == key)
+                .unwrap();
+            assert_eq!(entry["managed"], false);
+            assert_eq!(entry["readOnlyReason"], Value::Null);
+            assert!(!receipt_path(&data, workspace, key).exists());
+            if workspace != "claude" {
+                let before_entries =
+                    entries(&snapshot(&context, workspace).unwrap(), workspace).unwrap();
+                toggle_enabled(
+                    &data,
+                    &context,
+                    workspace,
+                    key,
+                    &scoped_revision(&before, key),
+                    false,
+                )
+                .unwrap();
+                let disabled = view(&data, &context, workspace).unwrap();
+                let after = entries(&snapshot(&context, workspace).unwrap(), workspace).unwrap();
+                let mut old_value = before_entries
+                    .iter()
+                    .find(|entry| entry.name == key)
+                    .unwrap()
+                    .value
+                    .clone();
+                let mut new_value = after
+                    .iter()
+                    .find(|entry| entry.name == key)
+                    .unwrap()
+                    .value
+                    .clone();
+                let flag = if workspace == "codex" {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
+                old_value.as_object_mut().unwrap().remove(flag);
+                new_value.as_object_mut().unwrap().remove(flag);
+                assert_eq!(
+                    old_value, new_value,
+                    "toggle preserves all other entry fields"
+                );
+                assert!(receipt_path(&data, workspace, key).starts_with(data.join("mcp/receipts")));
+                assert_eq!(
+                    receipt_path(&data, workspace, key).parent(),
+                    Some(data.join("mcp/receipts").as_path())
+                );
+                toggle_enabled(
+                    &data,
+                    &context,
+                    workspace,
+                    key,
+                    &scoped_revision(&disabled, key),
+                    true,
+                )
+                .unwrap();
+            }
+            remove(
+                &data,
+                &context,
+                workspace,
+                key,
+                &revision(&context, workspace, key),
+            )
+            .unwrap();
+            let after = entries(&snapshot(&context, workspace).unwrap(), workspace).unwrap();
+            assert_eq!(after.len(), 1);
+            assert_eq!(after[0].name, "unrelated");
+            assert!(!receipt_path(&data, workspace, key).exists());
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(text.contains("keep"));
+            assert!(text.contains("personal"));
+            assert!(fs::read_dir(data.join("mcp/backups"))
+                .unwrap()
+                .any(|item| fs::read(item.unwrap().path()).unwrap() == original.as_bytes()));
+        }
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn external_entry_actions_reject_changes_since_the_page_was_read() {
+        let (base, context) = fixture();
+        let data = base.join("data");
+        fs::write(
+            &context.codex_config,
+            "[mcp_servers.personal]\ncommand = 'tool'\n",
+        )
+        .unwrap();
+        let before = revision(&context, "codex", "personal");
+        let changed = "[mcp_servers.personal]\ncommand = 'new-tool'\n";
+        fs::write(&context.codex_config, changed).unwrap();
+        assert!(
+            toggle_enabled(&data, &context, "codex", "personal", &before, false)
+                .unwrap_err()
+                .contains("重新检测")
+        );
+        assert!(remove(&data, &context, "codex", "personal", &before)
+            .unwrap_err()
+            .contains("重新检测"));
+        assert_eq!(fs::read_to_string(&context.codex_config).unwrap(), changed);
+        assert!(!data.join("mcp/receipts").exists());
+        assert!(!data.join("mcp/backups").exists());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn receipt_paths_keep_existing_integration_keys_and_escape_unsafe_keys() {
+        let data = Path::new("data");
+        for key in ["codegraph", "cyapi_example", "My_MCP"] {
+            assert_eq!(
+                receipt_path(data, "codex", key),
+                data.join("mcp/receipts").join(format!("codex-{key}.json"))
+            );
+        }
+        for key in ["../escape", "..\\escape", "name:stream", "custom MCP"] {
+            let path = receipt_path(data, "codex", key);
+            assert_eq!(path.parent(), Some(data.join("mcp/receipts").as_path()));
+            assert!(path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("codex-key~"));
+        }
+    }
+
+    #[test]
+    fn unrecognized_entries_stay_read_only_without_creating_receipts() {
+        let (base, context) = fixture();
+        let data = base.join("data");
+        fs::write(context.opencode_config.resolve().unwrap(),
+            r#"{"mcp":{"servers":{"empty":{},"wrong-command":{"command":"tool"},"wrong-url":{"url":123,"command":["tool"]}}}}"#).unwrap();
+        let before = view(&data, &context, "opencode").unwrap();
+        for entry in before["local"].as_array().unwrap() {
+            assert!(entry["readOnlyReason"].is_string());
+            let key = entry["name"].as_str().unwrap();
+            let rev = scoped_revision(&before, key);
+            assert!(toggle_enabled(&data, &context, "opencode", key, &rev, false).is_err());
+            assert!(remove(&data, &context, "opencode", key, &rev).is_err());
+        }
+        assert!(!data.join("mcp/receipts").exists());
+        assert!(!data.join("mcp/backups").exists());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn runtime_entries_stay_read_only_even_with_a_matching_receipt() {
+        let (base, context) = fixture();
+        let data = base.join("data");
+        for (key, command) in [
+            ("node_repl", "runtime-tool"),
+            ("renamed-runtime", r"C:\Codex\runtimes\node_repl.exe"),
+            ("unix-runtime", "/opt/codex/node_repl"),
+        ] {
+            let original = format!("[mcp_servers.{key}]\ncommand = '{command}'\n");
+            fs::write(&context.codex_config, &original).unwrap();
+            let local = entries(&snapshot(&context, "codex").unwrap(), "codex").unwrap();
+            write_receipt(&data, "codex", &context.codex_config, key, &local[0].hash).unwrap();
+            let before = view(&data, &context, "codex").unwrap();
+            assert!(before["local"][0]["readOnlyReason"]
+                .as_str()
+                .unwrap()
+                .contains("运行时"));
+            let rev = scoped_revision(&before, key);
+            assert!(toggle_enabled(&data, &context, "codex", key, &rev, false)
+                .unwrap_err()
+                .contains("运行时"));
+            assert!(remove(&data, &context, "codex", key, &rev)
+                .unwrap_err()
+                .contains("运行时"));
+            let mut descriptor = catalog(&data).unwrap().servers[0].clone();
+            descriptor.config_key = Some(key.into());
+            assert!(
+                install_descriptor(&data, &context, "codex", &descriptor, &rev)
+                    .unwrap_err()
+                    .contains("运行时")
+            );
+            assert!(
+                adopt_descriptor(&data, &context, "codex", &descriptor, &rev)
+                    .unwrap_err()
+                    .contains("运行时")
+            );
+            assert_eq!(fs::read_to_string(&context.codex_config).unwrap(), original);
+        }
+        assert!(!data.join("mcp/backups").exists());
         fs::remove_dir_all(base).unwrap();
     }
 
@@ -2244,14 +2733,6 @@ mod tests {
             let before = view(&data, &context, "opencode").unwrap();
             assert_eq!(before["entries"][0]["state"], "adoptable");
             assert_eq!(before["local"].as_array().unwrap().len(), 2);
-            adopt(
-                &data,
-                &context,
-                "opencode",
-                "codegraph",
-                &scoped_revision(&before, "codegraph"),
-            )
-            .unwrap();
             let rev = revision(&context, "opencode", "codegraph");
             toggle_enabled(&data, &context, "opencode", "codegraph", &rev, true).unwrap();
             let rev = revision(&context, "opencode", "codegraph");
@@ -2747,7 +3228,7 @@ mod tests {
     }
 
     #[test]
-    fn adopts_external_entry_and_rejects_modified_receipts() {
+    fn existing_entries_need_no_adoption_and_refreshed_actions_preserve_external_edits() {
         let (base, context) = fixture();
         let data = base.join("data");
         fs::write(
@@ -2755,10 +3236,19 @@ mod tests {
             "[mcp_servers]\n\n[mcp_servers.codegraph]\ncommand = \"codegraph\"\nargs = [\"serve\", \"--mcp\"]\nenabled = true\n",
         )
         .unwrap();
-        let rev = revision(&context, "codex", "codegraph");
         let before = view(&data, &context, "codex").unwrap();
         assert_eq!(before["entries"][0]["adoptable"], true);
-        adopt(&data, &context, "codex", "codegraph", &rev).unwrap();
+        assert_eq!(before["entries"][0]["canDisable"], true);
+        assert_eq!(before["entries"][0]["canRemove"], true);
+        toggle_enabled(
+            &data,
+            &context,
+            "codex",
+            "codegraph",
+            &scoped_revision(&before, "codegraph"),
+            false,
+        )
+        .unwrap();
         assert_eq!(
             view(&data, &context, "codex").unwrap()["entries"][0]["managed"],
             true
@@ -2772,32 +3262,35 @@ mod tests {
         assert_eq!(changed["entries"][0]["managed"], false);
         assert_eq!(changed["entries"][0]["modified"], true);
         assert_eq!(changed["entries"][0]["canAdopt"], true);
-        assert_eq!(changed["entries"][0]["canRemove"], false);
+        assert_eq!(changed["entries"][0]["canRemove"], true);
         assert!(remove(
             &data,
             &context,
             "codex",
             "codegraph",
-            &scoped_revision(&changed, "codegraph")
+            &scoped_revision(&before, "codegraph")
         )
         .unwrap_err()
-        .contains("外部修改"));
-        adopt(
+        .contains("重新检测"));
+        toggle_enabled(
             &data,
             &context,
             "codex",
             "codegraph",
             &scoped_revision(&changed, "codegraph"),
+            false,
         )
         .unwrap();
-        let adopted = view(&data, &context, "codex").unwrap();
-        assert_eq!(adopted["entries"][0]["managed"], true);
+        assert!(fs::read_to_string(&context.codex_config)
+            .unwrap()
+            .contains("startup_timeout_sec = 999"));
+        let refreshed = view(&data, &context, "codex").unwrap();
         remove(
             &data,
             &context,
             "codex",
             "codegraph",
-            &scoped_revision(&adopted, "codegraph"),
+            &scoped_revision(&refreshed, "codegraph"),
         )
         .unwrap();
         assert!(!fs::read_to_string(&context.codex_config)

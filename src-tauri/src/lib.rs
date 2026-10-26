@@ -1,4 +1,6 @@
 mod agent_logs;
+mod blender_runtime;
+mod blender_service;
 mod cancel;
 mod catalog_cache;
 mod claude_config;
@@ -24,7 +26,6 @@ mod python_runtime;
 mod runtime;
 mod service;
 mod software;
-mod telemetry;
 mod update;
 mod usage;
 
@@ -107,6 +108,7 @@ async fn toolbox(
             | "configuration-read"
             | "models-list"
             | "update-check"
+            | "integration-services-read"
     );
     let started = std::time::Instant::now();
     if visible {
@@ -196,6 +198,22 @@ async fn toolbox(
             }
             let result = if action == "open-url" {
                 crate::update::open(request.url.as_deref().unwrap_or_default())
+            } else if action == "integration-services-read" {
+                let workspace = request.workspace.as_deref().unwrap_or("codex");
+                // Snapshot only local endpoint settings under the lock. DNS and
+                // addon I/O must not block settings, MCP or other local pages.
+                let probes = service
+                    .lock()
+                    .map_err(|_| "安装服务暂不可用".to_string())
+                    .and_then(|state| {
+                        state
+                            .as_ref()
+                            .map_err(|error| error.clone())?
+                            .integration_service_probes(workspace)
+                    });
+                probes.map(|probes| {
+                    tauri::async_runtime::block_on(blender_service::read(workspace, probes))
+                })
             } else if matches!(action.as_str(), "update-download" | "update-install") {
                 // Copy only immutable update settings, then release the global
                 // lock before any network request or large file operation.
@@ -307,9 +325,6 @@ pub fn run() {
         format!("CYAPI Toolbox {} 启动", env!("CARGO_PKG_VERSION")),
     );
     let service = Service::from_environment();
-    if let Ok(service) = &service {
-        telemetry::start(service.data.clone(), service.server_url().to_string());
-    }
     if let Err(error) = &service {
         logging::event(
             "error",

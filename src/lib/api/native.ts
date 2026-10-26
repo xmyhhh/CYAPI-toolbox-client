@@ -107,6 +107,9 @@ export interface NativeStatus {
     record: NativeRecord;
     exists: boolean;
     managed?: boolean;
+    /** Explicit backend permission; older clients only support managed uninstall. */
+    removable?: boolean;
+    removalBlockedReason?: string | null;
     visibleTargets?: NativeRecord['target'][];
   }[];
   dataPath: string;
@@ -275,7 +278,10 @@ export interface IntegrationEntry {
     state: 'unknown' | 'incompatible' | 'tested' | 'untested';
     message: string;
   };
-  relatedMcp?: { id: string; configured: boolean; state?: string };
+  relatedMcp?: { id: string; configured: boolean; runtimeReady?: boolean; state?: string };
+  /** Plugin files are prepared; enabling and starting the in-app service is separate. */
+  addonReady?: boolean;
+  service?: IntegrationServiceStatus;
   readiness?: {
     state: 'not-installed' | 'needs-attention' | 'configured' | 'ready';
     checks: {
@@ -295,6 +301,17 @@ export interface IntegrationEntry {
     rows: { label: string; value: string }[];
     values?: Record<string, ConfigValue>;
   };
+}
+
+export interface IntegrationServiceStatus {
+  state: 'connected' | 'waiting' | 'timeout' | 'invalid-response' | 'unverified';
+  address?: string | null;
+  message: string;
+  checkedAt: number;
+}
+export interface IntegrationServicesView {
+  workspace: 'codex' | 'claude' | 'opencode';
+  entries: { id: string; mcpRevision?: string | null; service: IntegrationServiceStatus }[];
 }
 export interface IntegrationView {
   manifest: IntegrationManifest;
@@ -376,6 +393,8 @@ export interface McpLocalEntry {
   target: string;
   enabled: boolean;
   managed: boolean;
+  /** Runtime-owned, duplicate or unrecognized entries cannot be edited here. */
+  readOnlyReason: string | null;
   catalogId: string | null;
   duplicate?: boolean;
 }
@@ -405,6 +424,7 @@ const quietActions = [
   'mcp-refresh',
   'integrations-read',
   'integrations-refresh',
+  'integration-services-read',
   'update-check',
 ];
 export async function nativeCall<T>(

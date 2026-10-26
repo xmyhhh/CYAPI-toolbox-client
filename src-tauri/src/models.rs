@@ -127,6 +127,8 @@ pub struct Installation {
     pub record: Record,
     pub exists: bool,
     pub managed: bool,
+    pub removable: bool,
+    pub removal_blocked_reason: Option<String>,
     /// Agents that discover this path. The record retains its original owner.
     pub visible_targets: Vec<String>,
 }
@@ -145,6 +147,7 @@ pub struct Request {
     pub scope: Option<String>,
     pub project_path: Option<String>,
     pub record_id: Option<String>,
+    pub installation_path: Option<String>,
     pub values: Option<std::collections::BTreeMap<String, serde_json::Value>>,
     pub flow_revision: Option<String>,
     pub codex: Option<crate::codex_config::Input>,

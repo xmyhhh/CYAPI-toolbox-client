@@ -14,7 +14,11 @@ import type {
   CollectionStep,
 } from './collection-install';
 import { idleCollectionRun, removeCollectionEntries } from './collection-run';
-import type { CollectionRemovalResult, CollectionRunMode, CollectionRunState } from './collection-run';
+import type {
+  CollectionRemovalResult,
+  CollectionRunMode,
+  CollectionRunState,
+} from './collection-run';
 import type { InstalledSkill } from './collections';
 
 export interface CollectionRunInput {
@@ -81,8 +85,7 @@ export function useCollectionRun(handlers: CollectionRunHandlers) {
       const id = ++runId.current;
       // A task that was replaced must not write its outcome over the new one.
       const stale = () => runId.current !== id;
-      const label =
-        input.mode === 'install' ? '正在安装技能套件' : '正在备份并卸载技能套件';
+      const label = input.mode === 'install' ? '正在安装技能套件' : '正在备份并卸载技能套件';
       const startedAt = Date.now();
       let progress = '正在准备…';
       const statusMessage = () => {
@@ -130,6 +133,7 @@ export function useCollectionRun(handlers: CollectionRunHandlers) {
         } else {
           const outcome = await removeCollectionEntries({
             entries,
+            workspace: input.location.target,
             call,
             signal: abort.signal,
             onProgress: report,
@@ -161,7 +165,10 @@ export function useCollectionRun(handlers: CollectionRunHandlers) {
       }
       if (refreshError) {
         if (removal) removal = { ...removal, refreshError };
-        else error = error ? `${error}（列表刷新失败：${refreshError}）` : `列表刷新失败：${refreshError}`;
+        else
+          error = error
+            ? `${error}（列表刷新失败：${refreshError}）`
+            : `列表刷新失败：${refreshError}`;
       }
       if (stale()) return;
       setRun((state) => ({

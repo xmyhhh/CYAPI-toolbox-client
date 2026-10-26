@@ -6,6 +6,6 @@
 
 **下载：** [官方网站](https://tool.cyapi.cyou/#download) · [GitHub Releases](https://github.com/xmyhhh/CYAPI-toolbox-client/releases)。详细说明见 [功能介绍](docs/FEATURES.md)、[日志排查](docs/DIAGNOSTICS.md) 和 [用量统计](docs/USAGE.md)。
 
-**隐私：** API Key 与工具配置保存在本机。客户端可发送 Skill / MCP 操作结果统计，包含随机设备标识，不发送 API Key、本机路径、命令或模型内容；可在「设置 → 使用统计」关闭并清空待发送队列。
+**隐私：** API Key 与工具配置保存在本机，客户端不额外上报 Skill / MCP 操作结果，也不为此生成设备标识或统计队列。下载量可由服务端根据下载请求统计；本机日志与模型用量统计保留在本地。
 
 本项目使用 Tauri 2、React、TypeScript 和 Vite。公开源码仅供查阅、本地编译与审查评估，不授权修改、衍生、再分发或商业使用，详见 [LICENSE](LICENSE)；第三方组件许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。

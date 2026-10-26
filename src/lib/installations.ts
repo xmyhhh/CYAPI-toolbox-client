@@ -10,3 +10,12 @@ export function visibleInWorkspace(entry: Installation, workspace: Target): bool
 export function canManageInstallation(entry: Installation, workspace: Target): boolean {
   return entry.managed !== false && entry.record.target === workspace;
 }
+
+export function canRemoveInstallation(entry: Installation, workspace: Target): boolean {
+  return (
+    entry.record.target === workspace &&
+    entry.exists &&
+    !entry.removalBlockedReason &&
+    (entry.removable ?? entry.managed !== false)
+  );
+}

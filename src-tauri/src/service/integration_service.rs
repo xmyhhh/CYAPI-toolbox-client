@@ -3,6 +3,173 @@
 use super::*;
 
 impl Service {
+    pub(crate) fn integration_service_probes(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<crate::blender_service::Probe>> {
+        if !["codex", "claude", "opencode"].contains(&workspace) {
+            return Err("未知 AI 工作区".into());
+        }
+        let manifest = crate::integrations::catalog(&self.data)?;
+        let catalog = crate::mcp::catalog(&self.data)?;
+        let mut probes = Vec::new();
+        for descriptor in manifest.integrations {
+            let Some(mcp) = catalog.servers.iter().find(|server| {
+                descriptor.related_mcp_id.as_deref() == Some(server.id.as_str())
+                    && crate::blender_runtime::supported(server)
+            }) else {
+                continue;
+            };
+            let (revision, endpoint) = match crate::mcp::blender_service_endpoint(
+                &self.mcp_context(),
+                workspace,
+                crate::mcp::config_key(mcp),
+            ) {
+                Ok((revision, endpoint)) => (Some(revision), endpoint),
+                Err(error) => (None, Err(error)),
+            };
+            probes.push(crate::blender_service::Probe {
+                id: descriptor.id,
+                revision,
+                endpoint,
+            });
+        }
+        Ok(probes)
+    }
+
+    fn integration_mcp_descriptor(
+        &self,
+        workspace: &str,
+        id: &str,
+    ) -> Result<crate::mcp::Descriptor> {
+        let view = crate::mcp::view(&self.data, &self.mcp_context(), workspace)?;
+        let descriptor = view["catalog"]["servers"]
+            .as_array()
+            .and_then(|servers| servers.iter().find(|s| s["id"] == id))
+            .ok_or("关联 MCP 目录尚未下载，请刷新接入目录后重试")?;
+        serde_json::from_value(descriptor.clone()).map_err(|e| e.to_string())
+    }
+
+    fn integration_command_ready(descriptor: &crate::mcp::Descriptor) -> bool {
+        let crate::mcp::Transport::Stdio { command, .. } = &descriptor.transport else {
+            return true;
+        };
+        let path = Path::new(command);
+        if path.is_absolute() {
+            return path.is_file();
+        }
+        env::split_paths(&env::var_os("PATH").unwrap_or_default()).any(|directory| {
+            directory.join(command).is_file()
+                || cfg!(windows)
+                    && ["exe", "cmd", "bat"]
+                        .iter()
+                        .any(|extension| directory.join(format!("{command}.{extension}")).is_file())
+        })
+    }
+
+    fn prepare_integration_mcp(
+        &mut self,
+        workspace: &str,
+        id: &str,
+        expected: Option<&str>,
+    ) -> Result<()> {
+        if self.integration_mcp_descriptor(workspace, id).is_err() {
+            let fetched = fetch_catalog_conditional(self.server_url(), &self.data, "/api/mcp")?;
+            self.apply_mcp(fetched)?;
+        }
+        let mut descriptor = self.integration_mcp_descriptor(workspace, id)?;
+        let context = self.mcp_context();
+        let status = crate::mcp::descriptor_status(&self.data, &context, workspace, &descriptor)?;
+        let revision = status["revision"].as_str().ok_or("MCP 配置版本缺失")?;
+        if expected.is_some_and(|v| v != revision)
+            || (expected.is_none() && status["installed"] == true)
+        {
+            return Err("MCP 配置已变化，请检查状态后重试接入".into());
+        }
+        if status["compatible"] != true || status["tokenAvailable"] != true {
+            return Err("关联 MCP 不支持当前工作区，或缺少本机凭据，请检查 MCP 管理".into());
+        }
+        if status["canInstall"] != true && status["state"] != "adoptable" {
+            return Err(
+                "已有 MCP 配置发生冲突或被外部修改，已保留原配置，请在 MCP 管理中检查".into(),
+            );
+        }
+        let raw = crate::mcp::catalog(&self.data)?
+            .servers
+            .into_iter()
+            .find(|s| s.id == id);
+        if raw.as_ref().is_some_and(crate::blender_runtime::supported) {
+            crate::blender_runtime::prepare(&self.data)?;
+            descriptor = self.integration_mcp_descriptor(workspace, id)?;
+        } else if !Self::integration_command_ready(&descriptor) {
+            return Err(
+                "关联 MCP 的启动程序尚未安装，当前服务暂不支持自动准备该依赖；未写入不可运行的配置"
+                    .into(),
+            );
+        }
+        // The original revision is retained across downloads, so an external
+        // edit made while preparing dependencies is never overwritten.
+        crate::mcp::install_descriptor(&self.data, &context, workspace, &descriptor, revision)?;
+        if raw.as_ref().is_some_and(crate::blender_runtime::supported) {
+            crate::blender_runtime::prepare_addon(&self.data, &self.home, &self.app_data_dir())?;
+        }
+        Ok(())
+    }
+
+    fn prepare_integration_skill(
+        &mut self,
+        id: &str,
+        workspace: &str,
+        visiting: &mut HashSet<String>,
+        adjacent: bool,
+    ) -> Result<()> {
+        if !visiting.insert(id.into()) {
+            return Err(format!("共享依赖存在循环引用：{id}"));
+        }
+        let skill = self.skill(id)?;
+        let path = self.target_path(&skill, workspace, "global", "")?;
+        let existing = if adjacent {
+            self.discover_installations(None)
+                .into_iter()
+                .find(|entry| {
+                    entry.exists
+                        && entry.record.scope == "global"
+                        && crate::installed::matches(&entry.record, &skill)
+                        && Path::new(&entry.record.path)
+                            .parent()
+                            .map(crate::installed::path_key)
+                            == path.parent().map(crate::installed::path_key)
+                })
+                .map(|entry| entry.record)
+        } else {
+            self.existing_skill(&skill, workspace, "global", &path)
+        };
+        if existing.is_none() {
+            self.download(id)?;
+            let mut chain = visiting
+                .iter()
+                .filter(|ancestor| ancestor.as_str() != id)
+                .cloned()
+                .collect();
+            self.install_skill(id, workspace, "global", "", &mut chain)?;
+        } else if let Some(record) = existing {
+            if !self.integration_dependencies_ready(&skill, &record, &mut HashSet::new()) {
+                if !Self::owns(&record) || record.target != workspace {
+                    return Err("已有 Skill 的运行依赖不完整，且不属于当前工作区管理；已保留原文件，请在原工作区检查".into());
+                }
+                for dependency in &skill.shared_dependencies {
+                    self.prepare_integration_skill(dependency, workspace, visiting, true)?;
+                }
+                if !self.integration_dependencies_ready(&skill, &record, &mut HashSet::new()) {
+                    self.download(id)?;
+                    self.reinstall_skill(id, workspace, "global", "", true)?;
+                }
+            }
+        }
+        visiting.remove(id);
+        Ok(())
+    }
+
     fn integration_dependencies_ready(
         &self,
         skill: &Skill,
@@ -198,11 +365,42 @@ impl Service {
                     .and_then(|entries| entries.iter().find(|e| e["id"] == *id));
                 let configured =
                     status.is_some_and(|s| s["recognized"] == true && s["enabled"] == true);
-                entry["relatedMcp"] =
-                    json!({"id":id,"configured":configured,"state":status.map(|s|&s["state"])});
-                checks.push(json!({"id":"connection","title":"MCP 工具连接","state":if configured {"unverified"} else {"blocked"},
-                    "message":if configured {"连接已配置并启用；软件内服务与实际调用仍需验证"} else {"请前往 MCP 管理配置并启用对应连接"}}));
-                if !configured {
+                let blender = crate::mcp::catalog(&self.data).ok().is_some_and(|catalog| {
+                    catalog
+                        .servers
+                        .iter()
+                        .any(|s| s.id == *id && crate::blender_runtime::supported(s))
+                });
+                let runtime = if blender {
+                    Some(crate::blender_runtime::status(
+                        &self.data,
+                        &self.home,
+                        &self.app_data_dir(),
+                    ))
+                } else {
+                    None
+                };
+                let runtime_ready = if let Some(runtime) = &runtime {
+                    runtime["runtimeReady"] == true
+                } else {
+                    self.integration_mcp_descriptor(workspace, id)
+                        .is_ok_and(|d| Self::integration_command_ready(&d))
+                };
+                entry["relatedMcp"] = json!({"id":id,"configured":configured,"runtimeReady":runtime_ready,"state":status.map(|s|&s["state"])});
+                entry["mcpRevision"] = status.map(|s| s["revision"].clone()).unwrap_or(Value::Null);
+                checks.push(json!({"id":"mcp-runtime","title":"MCP 运行环境","state":if runtime_ready {"ready"} else {"blocked"},
+                    "message":if runtime_ready {"启动程序已准备"} else {"运行环境尚未准备；点击一键接入将自动准备支持的依赖"}}));
+                checks.push(json!({"id":"connection","title":"MCP 配置","state":if configured {"ready"} else {"blocked"},
+                    "message":if configured {"当前 AI 工具的 MCP 配置已写入并启用；软件内服务与实际调用仍需验证"} else {"尚未配置并启用；点击一键接入会自动处理，无需另行安装 MCP"}}));
+                if let Some(runtime) = &runtime {
+                    entry["addonReady"] = runtime["addonReady"].clone();
+                    checks.push(json!({"id":"addon-files","title":"Blender 插件文件","state":if runtime["addonReady"] == true {"ready"} else {"unverified"},"message":runtime["addonMessage"]}));
+                    entry["service"] = json!(crate::blender_service::Status::unverified("正在检测 Blender 服务；启用插件后还需在 3D 视图按 N，打开 MCP for Blender，点击 Connect to MCP server"));
+                    checks.push(json!({"id":"software-service","title":"Blender 服务连接","state":"unverified","message":entry["service"]["message"]}));
+                } else {
+                    checks.push(json!({"id":"software-service","title":"软件内服务","state":"unverified","message":"请按教程启动软件内服务；配置完成不代表实际调用成功"}));
+                }
+                if !configured || !runtime_ready {
                     entry["usable"] = json!(false);
                 }
             } else if descriptor.skill_id.is_none() {
@@ -275,14 +473,15 @@ impl Service {
                         if self.skill(skill_id).is_err() {
                             self.refresh()?;
                         }
-                        let skill = self.skill(skill_id)?;
-                        let path = self.target_path(&skill, workspace, "global", "")?;
-                        if self
-                            .existing_skill(&skill, workspace, "global", &path)
-                            .is_none()
-                        {
-                            self.download(skill_id)?;
-                            self.install(skill_id, workspace, "global", "")?;
+                        self.prepare_integration_skill(
+                            skill_id,
+                            workspace,
+                            &mut HashSet::new(),
+                            false,
+                        )?;
+                        if let Some(id) = &descriptor.related_mcp_id {
+                            self.prepare_integration_mcp(workspace, id, request.configuration_revision.as_deref())
+                                .map_err(|error| format!("Skill 已安装，但接入尚未完成：{error}。已完成的步骤会保留，可重试补全接入。"))?;
                         }
                         if workspace == "codex" {
                             crate::integrations::retire_previous(

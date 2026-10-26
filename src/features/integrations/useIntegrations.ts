@@ -5,12 +5,18 @@ import type {
   IntegrationAction,
   IntegrationDescriptor,
   IntegrationManifest,
+  IntegrationServicesView,
   IntegrationView,
 } from '../../lib/api/native';
-import { integrationManifest } from './model';
+import {
+  integrationManifest,
+  integrationPreparedNotice,
+  integrationServiceView,
+  integrationServiceFailure,
+} from './model';
 
 type Workspace = 'codex' | 'claude' | 'opencode';
-export function useIntegrations(workspace: Workspace) {
+export function useIntegrations(workspace: Workspace, onInstallationsChanged: () => Promise<void>) {
   const [view, setView] = useState<IntegrationView>();
   const [preview, setPreview] = useState<IntegrationManifest>();
   const [busy, setBusy] = useState('');
@@ -50,6 +56,49 @@ export function useIntegrations(workspace: Workspace) {
     };
   }, [read]);
 
+  const hasService = !!view?.entries.some((entry) => entry.service);
+  useEffect(() => {
+    if (!nativeAvailable || !hasService || busy) return;
+    let active = true;
+    let inFlight = false;
+    const refresh = async () => {
+      if (!active || inFlight || document.visibilityState === 'hidden') return;
+      inFlight = true;
+      const token = generation.current;
+      try {
+        // Only probe the addon: no catalog downloads or full installation scan.
+        const result = await nativeCall<IntegrationServicesView>('integration-services-read', {
+          workspace,
+        });
+        if (active && generation.current === token)
+          setView((previous) => previous && integrationServiceView(previous, result));
+      } catch {
+        if (active && generation.current === token)
+          setView(
+            (previous) =>
+              previous &&
+              integrationServiceFailure(
+                previous,
+                '服务状态检测失败，请点击「检查状态」重试；这不代表 Blender 服务未启动。',
+              ),
+          );
+      } finally {
+        inFlight = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5000);
+    const onFocus = () => void refresh();
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+  }, [workspace, busy, hasService]);
+
   async function update(action: string, descriptor?: IntegrationDescriptor) {
     const token = ++generation.current;
     setBusy(action);
@@ -67,19 +116,43 @@ export function useIntegrations(workspace: Workspace) {
       if (generation.current !== token) return;
       if ('manifest' in result) setView(result);
       else setPreview(result);
-      if (action === 'integration-connect' || action === 'integration-adopt') {
-        setNotice({
-          text: '所需能力已准备，请按教程检查软件，并在 AI 工具的新会话中完成首次验证。',
-        });
+      if (
+        (action === 'integration-connect' || action === 'integration-adopt') &&
+        descriptor &&
+        'manifest' in result
+      ) {
+        setNotice(
+          integrationPreparedNotice(
+            descriptor,
+            result.entries.find((entry) => entry.id === descriptor.id),
+          ),
+        );
       } else if (action === 'integration-disconnect')
         setNotice({
-          text: descriptor?.skillId ? '技能已卸载，原文件已备份。' : '接入配置已移除。',
+          text: descriptor?.skillId
+            ? '技能已卸载，原文件已备份。MCP 配置与共享运行环境保留，可在 MCP 管理中移除。'
+            : '接入配置已移除。',
         });
       else if (action === 'integrations-refresh') setNotice({ text: '接入目录已刷新。' });
     } catch (error) {
       if (generation.current === token)
         setNotice({ text: String(error instanceof Error ? error.message : error), error: true });
     } finally {
+      // A failed MCP step may follow a successful Skill installation. Always
+      // reload both snapshots, never leave another page showing the old state.
+      const mutating = action.startsWith('integration-');
+      const refreshed = mutating
+        ? await Promise.allSettled([read(), onInstallationsChanged()])
+        : [];
+      if (generation.current === token) {
+        const next = refreshed[0];
+        if (next?.status === 'fulfilled' && 'manifest' in next.value) setView(next.value);
+        if (refreshed.some((result) => result.status === 'rejected'))
+          setNotice((previous) => ({
+            text: `${previous?.text ?? ''} 状态刷新失败，请点击检查状态重试。`.trim(),
+            error: true,
+          }));
+      }
       if (generation.current === token) setBusy('');
     }
   }

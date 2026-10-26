@@ -11,7 +11,12 @@ import {
   Unplug,
 } from 'lucide-react';
 import { nativeAvailable } from '../lib/api/native';
-import { integrationComponent, integrationLabel } from '../features/integrations/model';
+import {
+  integrationCanPrepare,
+  integrationComponent,
+  integrationLabel,
+  integrationPrepareLabel,
+} from '../features/integrations/model';
 import { useIntegrations } from '../features/integrations/useIntegrations';
 import { IntegrationTutorial } from '../features/integrations/IntegrationTutorial';
 import { VersionPanel } from '../features/integrations/VersionPanel';
@@ -26,6 +31,7 @@ type Props = {
   workspace: Workspace;
   onManageMcp: (id: string, installed?: boolean) => void;
   onManageSkill: (id: string) => void;
+  onInstallationsChanged: () => Promise<void>;
 };
 
 function checksFor(entry?: IntegrationEntry) {
@@ -47,10 +53,17 @@ function checksFor(entry?: IntegrationEntry) {
   );
 }
 
-export function Integrations({ workspace, onManageMcp, onManageSkill }: Props) {
+export function Integrations({
+  workspace,
+  onManageMcp,
+  onManageSkill,
+  onInstallationsChanged,
+}: Props) {
   const [selected, setSelected] = useState('');
-  const { view, manifest, busy, notice, setNotice, outputs, update, run } =
-    useIntegrations(workspace);
+  const { view, manifest, busy, notice, setNotice, outputs, update, run } = useIntegrations(
+    workspace,
+    onInstallationsChanged,
+  );
   const descriptor =
     manifest?.integrations.find((item) => item.id === selected) ?? manifest?.integrations[0];
   const entry = view?.entries.find((item) => item.id === descriptor?.id);
@@ -58,14 +71,7 @@ export function Integrations({ workspace, onManageMcp, onManageSkill }: Props) {
   const platformMissing = !!descriptor && !descriptor.skillId && !component;
   const disabled = !!busy || !nativeAvailable;
   const canInstall =
-    !!view &&
-    !!descriptor &&
-    !platformMissing &&
-    entry?.requirementsMet !== false &&
-    entry?.compatible !== false &&
-    (descriptor.skillId
-      ? !entry?.registered
-      : entry?.canInstall !== false && (!entry?.registered || entry.updateAvailable));
+    !!view && !!descriptor && !platformMissing && integrationCanPrepare(descriptor, entry);
   const agentName = workspaceNames[workspace];
   return (
     <div className="n-integrations">
@@ -82,7 +88,7 @@ export function Integrations({ workspace, onManageMcp, onManageSkill }: Props) {
         </div>
       )}
       <div className="n-integration-toolbar">
-        <p>选择软件，按教程把第一次使用准备好。</p>
+        <p>选择软件，一键准备 Skill、运行依赖和当前 AI 工具的 MCP 配置。</p>
         <button
           className="n-button"
           disabled={!!busy}
@@ -179,6 +185,12 @@ export function Integrations({ workspace, onManageMcp, onManageSkill }: Props) {
               </div>
               <p className="n-config-note">
                 当前 AI 工具：<strong>{agentName}</strong>
+                {entry?.service && (
+                  <>
+                    <br />
+                    Blender 服务每 5 秒自动检测；切回工具箱时也会刷新。
+                  </>
+                )}
               </p>
               <ol className="n-readiness-checks">
                 {checksFor(entry).map((check) => (
@@ -206,7 +218,9 @@ export function Integrations({ workspace, onManageMcp, onManageSkill }: Props) {
                   。
                 </p>
               )}
-              {entry?.state === 'conflict' || entry?.state === 'changed' ? (
+              {entry?.state === 'conflict' ||
+              entry?.state === 'changed' ||
+              ['conflict', 'changed', 'incompatible'].includes(entry?.relatedMcp?.state ?? '') ? (
                 <p className="n-notice">已有配置与目录不一致，请在 MCP 管理中检查后再处理。</p>
               ) : null}
               <div className="n-setup-buttons">
@@ -221,37 +235,29 @@ export function Integrations({ workspace, onManageMcp, onManageSkill }: Props) {
                     <Plug size={15} />
                   )}
                   {busy === 'integration-connect'
-                    ? '正在准备…'
-                    : descriptor.skillId
-                      ? entry?.registered
-                        ? '技能已安装'
-                        : '安装所需能力'
-                      : entry?.updateAvailable
-                        ? '更新接入配置'
-                        : entry?.registered
-                          ? '连接已配置'
-                          : '安装并配置'}
+                    ? '正在准备技能、依赖与配置…'
+                    : platformMissing
+                      ? '当前系统暂无组件'
+                      : integrationPrepareLabel(descriptor, entry)}
                 </button>
-                {!descriptor.skillId && entry?.state === 'adoptable' && (
-                  <button
-                    className="n-button"
-                    disabled={disabled}
-                    onClick={() => void update('integration-adopt', descriptor)}
-                  >
-                    接管现有配置
-                  </button>
-                )}
                 {descriptor.relatedMcpId && (
                   <button
                     className="n-button"
-                    onClick={() => onManageMcp(descriptor.relatedMcpId!)}
+                    disabled={disabled}
+                    onClick={() =>
+                      onManageMcp(descriptor.relatedMcpId!, entry?.relatedMcp?.configured)
+                    }
                   >
                     管理 {descriptor.name} MCP
                     <ArrowRight size={14} />
                   </button>
                 )}
                 {descriptor.skillId && (
-                  <button className="n-button" onClick={() => onManageSkill(descriptor.skillId!)}>
+                  <button
+                    className="n-button"
+                    disabled={disabled}
+                    onClick={() => onManageSkill(descriptor.skillId!)}
+                  >
                     管理技能与更新
                     <ArrowRight size={14} />
                   </button>
@@ -277,7 +283,10 @@ export function Integrations({ workspace, onManageMcp, onManageSkill }: Props) {
                 )}
               </div>
               <p className="n-config-note">
-                安装配置后，重新打开 {agentName} 会话，再发送教程中的示例请求。
+                {descriptor.relatedMcpId
+                  ? '自动安装 Skill、隔离运行环境，并配置当前 AI 工具；不修改其他 AI 工具。软件内启用插件与启动服务仍需按检查项完成。'
+                  : '安装配置后，按检查项完成软件内操作。'}
+                然后重新打开 {agentName} 会话，再发送教程中的示例请求。
               </p>
               <details className="n-integration-help">
                 <summary>安装信息与许可</summary>
