@@ -1,8 +1,8 @@
 const efforts = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const labels: Record<string, string> = {
   '': '不覆盖（移除全局显式等级）',
-  none: '不思考 · none',
-  minimal: '最少 · minimal',
+  none: '不思考 · none（多数模型不支持）',
+  minimal: '最少 · minimal（部分模型不支持）',
   low: '低 · low',
   medium: '中 · medium',
   high: '高 · high',
@@ -33,7 +33,8 @@ export function ReasoningEffortPicker({
       </select>
       <p className="n-config-note">
         写入 Codex 的全局
-        model_reasoning_effort，不是逐模型默认值。候选值不代表每个模型都支持；不会修改模型目录中的能力声明。未知时请不覆盖。
+        model_reasoning_effort，会覆盖模型目录中逐模型声明的默认等级（可在每个模型的“配置”里声明）。候选值不代表每个模型都支持——例如服务商会直接拒绝
+        none 并报“Unsupported value”错误。不确定时请选“不覆盖”。
       </p>
     </div>
   );

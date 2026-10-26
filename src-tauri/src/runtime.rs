@@ -152,12 +152,24 @@ pub fn discover(home: &Path, data: &Path) -> Vec<Runtime> {
             continue;
         }
         for name in &node_names {
-            candidates.push((root.join("dependencies/node/bin").join(name), "node", "codex"));
+            candidates.push((
+                root.join("dependencies/node/bin").join(name),
+                "node",
+                "codex",
+            ));
         }
         for name in &python_names {
-            candidates.push((root.join("dependencies/python/bin").join(name), "python", "codex"));
+            candidates.push((
+                root.join("dependencies/python/bin").join(name),
+                "python",
+                "codex",
+            ));
             // The Windows Codex bundle keeps python.exe directly in python/.
-            candidates.push((root.join("dependencies/python").join(name), "python", "codex"));
+            candidates.push((
+                root.join("dependencies/python").join(name),
+                "python",
+                "codex",
+            ));
         }
     }
     for kind in ["node", "python"] {

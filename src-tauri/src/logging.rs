@@ -82,10 +82,7 @@ pub fn redact(text: &str) -> String {
 
 pub fn export_redact(text: &str) -> String {
     let mut value = redact(text);
-    for key in [
-        crate::platform::home_variable(),
-        "CYAPI_TOOLBOX_HOME_DIR",
-    ] {
+    for key in [crate::platform::home_variable(), "CYAPI_TOOLBOX_HOME_DIR"] {
         if let Some(home) = std::env::var_os(key) {
             let home = home.to_string_lossy();
             if !home.is_empty() {

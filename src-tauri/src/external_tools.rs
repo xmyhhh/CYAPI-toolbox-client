@@ -69,9 +69,7 @@ fn path(data: &Path, t: &Tool) -> PathBuf {
     data.join(t.path.trim_start_matches('/'))
 }
 fn checked(t: &Tool, bytes: &[u8]) -> bool {
-    bytes.len() as u64 == t.size
-        && crate::platform::is_executable(bytes)
-        && hash(bytes) == t.sha256
+    bytes.len() as u64 == t.size && crate::platform::is_executable(bytes) && hash(bytes) == t.sha256
 }
 /// The tools that can run on this machine. The server may declare tools for
 /// other platforms; those are neither downloaded nor required here.
@@ -160,11 +158,7 @@ pub fn launcher(data: &Path, tools: &[Tool]) -> Result<String> {
     }
     let dirs = usable
         .iter()
-        .map(|t| {
-            crate::platform::shell_quote(
-                &path(data, t).parent().unwrap().to_string_lossy(),
-            )
-        })
+        .map(|t| crate::platform::shell_quote(&path(data, t).parent().unwrap().to_string_lossy()))
         .collect::<Vec<_>>();
     Ok(format!("export PATH=\"{}:$PATH\"\n", dirs.join(":")))
 }
@@ -207,7 +201,9 @@ mod tests {
         assert!(validate(&tools).is_ok());
         let applicable = applicable(&tools);
         assert_eq!(applicable.len(), 2);
-        assert!(applicable.iter().all(|tool| tool.platform == crate::platform::current()));
+        assert!(applicable
+            .iter()
+            .all(|tool| tool.platform == crate::platform::current()));
         assert_eq!(unavailable(&tools).len(), 6);
         // The same platform may not publish a tool twice.
         let mut duplicate = tools.clone();

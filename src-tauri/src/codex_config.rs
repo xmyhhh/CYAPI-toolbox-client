@@ -34,6 +34,8 @@ pub struct Input {
     pub model: String,
     #[serde(default)]
     pub models: Option<Vec<String>>,
+    #[serde(default)]
+    pub model_settings: Option<std::collections::BTreeMap<String, crate::codex_models::Setting>>,
     pub reasoning_effort: String,
     #[serde(default)]
     pub context_window_change: Option<ContextWindowChange>,
@@ -307,9 +309,31 @@ fn snapshot_view(root: &Path, data: &Path, snapshot: &Snapshot) -> Result<Value>
         "reasoningEffort":setting(&doc, "model_reasoning_effort").unwrap_or(""),
         "contextWindow":semantic_item(doc.get("model_context_window")),
         "models":crate::codex_models::selected(root, &doc)?,
+        "modelSettings":model_settings(root, &doc)?,
         "apiKeyConfigured":key_in_auth(&auth).is_some(), "authMode":auth_mode,
         "canRestore":can_restore
     }))
+}
+
+fn model_settings(root: &Path, doc: &DocumentMut) -> Result<serde_json::Map<String, Value>> {
+    let mut settings = serde_json::Map::new();
+    for published in crate::codex_models::published(root, doc)? {
+        let crate::codex_models::Published {
+            model,
+            context_window,
+            reasoning_levels,
+            default_level,
+        } = published;
+        settings.insert(
+            model,
+            json!({
+                "contextWindow": context_window,
+                "reasoningLevels": reasoning_levels,
+                "defaultLevel": default_level,
+            }),
+        );
+    }
+    Ok(settings)
 }
 
 fn validate(input: &Input) -> Result<()> {
@@ -323,6 +347,38 @@ fn validate(input: &Input) -> Result<()> {
         }
     }
     crate::model_selection::models(&input.model, input.models.as_deref().unwrap_or_default())?;
+    if let Some(settings) = &input.model_settings {
+        for (model, setting) in settings {
+            if model.len() > 200 || model.chars().any(char::is_control) || model.trim().is_empty() {
+                return Err("逐模型配置包含无效的模型 ID".into());
+            }
+            if let Some(tokens) = setting.context_window {
+                if !(1..=MAX_CONTEXT_WINDOW).contains(&tokens) {
+                    return Err(format!(
+                        "{model} 的上下文窗口必须是 1 到 9007199254740991 之间的整数"
+                    ));
+                }
+            }
+            if let Some(levels) = &setting.reasoning_levels {
+                if levels.len() > 64 {
+                    return Err(format!("{model} 的思考等级列表过长"));
+                }
+                for level in levels {
+                    validate_level(level)?;
+                }
+            }
+            if let Some(level) = &setting.default_level {
+                validate_level(level)?;
+            }
+            if let (Some(default), Some(levels)) =
+                (&setting.default_level, &setting.reasoning_levels)
+            {
+                if !levels.is_empty() && !levels.contains(default) {
+                    return Err(format!("{model} 的默认思考等级必须在其思考等级列表内"));
+                }
+            }
+        }
+    }
     let url = reqwest::Url::parse(input.base_url.trim()).map_err(|_| "API 地址无效")?;
     if !["http", "https"].contains(&url.scheme())
         || url.host_str().is_none()
@@ -352,6 +408,12 @@ fn validate(input: &Input) -> Result<()> {
     }
     Ok(())
 }
+fn validate_level(level: &str) -> Result<()> {
+    if level.len() > 64 || level.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("不支持的思考等级".into());
+    }
+    Ok(())
+}
 fn validate_reasoning_effort(effort: &str, doc: &DocumentMut) -> Result<()> {
     // An unrelated edit must not reject or normalize an existing opaque value.
     if setting(doc, "model_reasoning_effort") == Some(effort) {
@@ -361,9 +423,7 @@ fn validate_reasoning_effort(effort: &str, doc: &DocumentMut) -> Result<()> {
     // model-defined non-empty strings, so a closed enum rejects future advertised
     // values (e.g. persistent). Bound new custom values without claiming support
     // for them in any model's catalog metadata.
-    if effort.len() > 64 || effort.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err("不支持的推理强度".into());
-    }
+    validate_level(effort)?;
     Ok(())
 }
 fn table<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Result<&'a mut dyn toml_edit::TableLike> {
@@ -547,8 +607,21 @@ pub fn save(root: &Path, data: &Path, input: &Input) -> Result<Value> {
     .to_string();
     if let Some(models) = &input.models {
         let selected = crate::model_selection::models(&input.model, models)?;
-        if selected.len() > 1 || !crate::codex_models::selected(root, &doc)?.is_empty() {
-            let path = crate::codex_models::write(root, data, &doc, &selected)?;
+        let settings = input.model_settings.as_ref();
+        let declared = selected.iter().any(|id| {
+            settings
+                .and_then(|map| map.get(id))
+                .is_some_and(|setting| setting.declared())
+        });
+        let choices: Vec<crate::codex_models::Choice> = selected
+            .iter()
+            .map(|id| crate::codex_models::Choice {
+                model: id.clone(),
+                setting: settings.and_then(|map| map.get(id)).cloned(),
+            })
+            .collect();
+        if choices.len() > 1 || !crate::codex_models::selected(root, &doc)?.is_empty() || declared {
+            let path = crate::codex_models::write(root, data, &doc, &choices)?;
             set(
                 doc.as_table_mut(),
                 "model_catalog_json",
@@ -627,6 +700,7 @@ mod tests {
             base_url: "https://example.invalid/v1/".into(),
             api_key: "dummy-api-key".into(),
             models: None,
+            model_settings: None,
             model: "example-model".into(),
             reasoning_effort: "high".into(),
             context_window_change: None,
@@ -1080,6 +1154,79 @@ mod tests {
         assert!(doc.get("model_reasoning_effort").is_none());
         assert_eq!(setting(&doc, "model_catalog_json"), path.to_str());
         assert_eq!(fs::read(path).unwrap(), bytes);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn per_model_declarations_publish_catalog_fields_and_read_back() {
+        let (base, root, data) = fixture();
+        fs::write(
+            root.join("models_cache.json"),
+            serde_json::to_vec(&json!({"models":[{
+                "slug":"known-model", "base_instructions":"Codex instructions",
+                "context_window": 272000,
+                "default_reasoning_level":"low",
+                "supported_reasoning_levels":[{"effort":"low","description":"Low"}]
+            }]}))
+            .unwrap(),
+        )
+        .unwrap();
+        let before = view(&root, &data).unwrap();
+        let mut change = input(&before);
+        change.model = "known-model".into();
+        change.models = Some(vec!["known-model".into(), "unknown-model".into()]);
+        change.model_settings = Some(std::collections::BTreeMap::from([
+            (
+                "known-model".into(),
+                crate::codex_models::Setting {
+                    context_window: Some(123456),
+                    reasoning_levels: Some(vec!["low".into(), "custom-level".into()]),
+                    default_level: Some("low".into()),
+                },
+            ),
+            (
+                "unknown-model".into(),
+                crate::codex_models::Setting {
+                    context_window: Some(64000),
+                    reasoning_levels: None,
+                    default_level: None,
+                },
+            ),
+        ]));
+        let saved = save(&root, &data, &change).unwrap();
+        let settings = saved["modelSettings"].clone();
+        assert_eq!(settings["known-model"]["contextWindow"], json!(123456));
+        assert_eq!(
+            settings["known-model"]["reasoningLevels"],
+            json!(["low", "custom-level"])
+        );
+        assert_eq!(settings["known-model"]["defaultLevel"], json!("low"));
+        assert_eq!(settings["unknown-model"]["contextWindow"], json!(64000));
+        assert_eq!(settings["unknown-model"]["reasoningLevels"], json!([]));
+        let doc = parse_config(&Snapshot::read(&root).unwrap().config).unwrap();
+        let path = PathBuf::from(setting(&doc, "model_catalog_json").unwrap());
+        let published: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(published["models"][0]["context_window"], json!(123456));
+        assert_eq!(published["models"][0]["default_reasoning_level"], "low");
+        assert_eq!(
+            published["models"][0]["supported_reasoning_levels"][1]["description"],
+            "Declared manually in the toolbox."
+        );
+        assert_eq!(published["models"][1]["context_window"], json!(64000));
+
+        // A default outside the declared levels is rejected with the model named.
+        let mut invalid = input(&saved);
+        invalid.model_settings = Some(std::collections::BTreeMap::from([(
+            "known-model".into(),
+            crate::codex_models::Setting {
+                context_window: None,
+                reasoning_levels: Some(vec!["low".into()]),
+                default_level: Some("high".into()),
+            },
+        )]));
+        assert!(save(&root, &data, &invalid)
+            .unwrap_err()
+            .contains("默认思考等级"));
         fs::remove_dir_all(base).unwrap();
     }
 

@@ -40,9 +40,7 @@ pub fn interpreter(root: &Path) -> Option<PathBuf> {
                     // as `python3-config`.
                     name == "python3"
                         || (name.starts_with("python3.")
-                            && name["python3.".len()..]
-                                .chars()
-                                .all(|c| c.is_ascii_digit()))
+                            && name["python3.".len()..].chars().all(|c| c.is_ascii_digit()))
                 })
                 .collect()
         })
@@ -89,9 +87,10 @@ pub fn install(data: &Path, archive: &[u8], version: &str) -> Result<PathBuf> {
     for entry in tar.entries().map_err(err)? {
         let mut entry = entry.map_err(err)?;
         let path = entry.path().map_err(err)?.into_owned();
-        let safe = path
-            .components()
-            .all(|part| !matches!(part, Component::RootDir | Component::Prefix(_)) && part != Component::ParentDir);
+        let safe = path.components().all(|part| {
+            !matches!(part, Component::RootDir | Component::Prefix(_))
+                && part != Component::ParentDir
+        });
         if !safe {
             return Err("Python 运行时包包含不安全的路径".into());
         }
@@ -128,7 +127,15 @@ mod tests {
         header.set_mode(0o755);
         header.set_cksum();
         builder
-            .append_data(&mut header, if cfg!(windows) { "python/python.exe" } else { "python/bin/python3.14" }, interpreter)
+            .append_data(
+                &mut header,
+                if cfg!(windows) {
+                    "python/python.exe"
+                } else {
+                    "python/bin/python3.14"
+                },
+                interpreter,
+            )
             .unwrap();
         let tar = builder.into_inner().unwrap();
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -150,13 +157,20 @@ mod tests {
         let root = std::env::temp_dir().join(format!("cyapi-python-unpack-{}", now()));
         let _ = fs::remove_dir_all(&root);
         #[cfg(windows)]
-        let executable = fs::read(PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe")).unwrap();
+        let executable = fs::read(
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe"),
+        )
+        .unwrap();
         #[cfg(not(windows))]
         let executable = b"#!/bin/sh\necho Python 3.14.8\n".to_vec();
         let bytes = archive(&executable);
         let installed = install(&root, &bytes, "3.14.8").unwrap();
         assert!(installed.is_file());
-        assert!(installed.ends_with(if cfg!(windows) { "python/python.exe" } else { "python/bin/python3.14" }));
+        assert!(installed.ends_with(if cfg!(windows) {
+            "python/python.exe"
+        } else {
+            "python/bin/python3.14"
+        }));
         // The interpreter runs from the unpacked location.
         let mut command = std::process::Command::new(&installed);
         #[cfg(windows)]
@@ -203,17 +217,30 @@ mod real_check {
         // Availability check: environment variable CYAPI_TEST_PYTHON_ARCHIVE specifies the archive location.
         let file = match std::env::var("CYAPI_TEST_PYTHON_ARCHIVE") {
             Ok(file) => file,
-            Err(_) => { println!("Skip: environment variable CYAPI_TEST_PYTHON_ARCHIVE is not set"); return; }
+            Err(_) => {
+                println!("Skip: environment variable CYAPI_TEST_PYTHON_ARCHIVE is not set");
+                return;
+            }
         };
-        if !std::path::Path::new(&file).exists() { println!("Skip: no prepared archive"); return; }
+        if !std::path::Path::new(&file).exists() {
+            println!("Skip: no prepared archive");
+            return;
+        }
         let bytes = std::fs::read(file).unwrap();
         let root = std::env::temp_dir().join("cyapi-real-check");
         let _ = std::fs::remove_dir_all(&root);
         let exe = super::install(&root, &bytes, "3.14.8").unwrap();
         println!("解释器: {}", exe.display());
-        let out = std::process::Command::new(&exe).arg("--version").output().unwrap();
+        let out = std::process::Command::new(&exe)
+            .arg("--version")
+            .output()
+            .unwrap();
         println!("版本: {}", String::from_utf8_lossy(&out.stdout).trim());
-        let out2 = std::process::Command::new(&exe).arg("-c").arg("import ssl,zlib,sqlite3,lzma;print('stdlib ok')").output().unwrap();
+        let out2 = std::process::Command::new(&exe)
+            .arg("-c")
+            .arg("import ssl,zlib,sqlite3,lzma;print('stdlib ok')")
+            .output()
+            .unwrap();
         println!("{}", String::from_utf8_lossy(&out2.stdout).trim());
         let _ = std::fs::remove_dir_all(&root);
     }

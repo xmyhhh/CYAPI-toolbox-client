@@ -221,9 +221,15 @@ print(json.dumps(sorted(names)))
                                     .arg(destination.join("mcp-server"))
                                     .output()
                                     .unwrap();
-                                assert!(output.status.success(), "Academic MCP startup failed: {}",
-                                    String::from_utf8_lossy(&output.stderr));
-                                println!("Academic MCP tools: {}", String::from_utf8_lossy(&output.stdout));
+                                assert!(
+                                    output.status.success(),
+                                    "Academic MCP startup failed: {}",
+                                    String::from_utf8_lossy(&output.stderr)
+                                );
+                                println!(
+                                    "Academic MCP tools: {}",
+                                    String::from_utf8_lossy(&output.stdout)
+                                );
                             }
                         }
                     }

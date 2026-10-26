@@ -86,12 +86,10 @@ fn fetch_server_once(
         .connect_timeout(Duration::from_secs(6))
         .redirect(reqwest::redirect::Policy::none());
     let builder = if direct_origin {
-        builder
-            .no_proxy()
-            .resolve(
-                url.host_str().unwrap_or(SERVER_HOST),
-                SocketAddr::from((SERVER_ORIGIN_IP, 443)),
-            )
+        builder.no_proxy().resolve(
+            url.host_str().unwrap_or(SERVER_HOST),
+            SocketAddr::from((SERVER_ORIGIN_IP, 443)),
+        )
     } else {
         builder
     };
@@ -172,10 +170,7 @@ fn can_bypass_cloudflare(url: &Url) -> bool {
         && url.port_or_known_default() == Some(443)
         && url.username().is_empty()
         && url.password().is_none()
-        && matches!(
-            url.host_str(),
-            Some(SERVER_HOST) | Some(DOWNLOAD_HOST)
-        )
+        && matches!(url.host_str(), Some(SERVER_HOST) | Some(DOWNLOAD_HOST))
 }
 /// Ask the server for a file, sending the entity tag of the cached copy so an
 /// unchanged file costs one round trip instead of the whole payload.
@@ -221,7 +216,13 @@ pub(crate) fn fetch_server_with_progress(
     let can_fallback = can_bypass_cloudflare(&url);
     progress(0);
     match fetch_server_once(
-        &url, limit, primary_timeout, false, etag, cancellable, progress,
+        &url,
+        limit,
+        primary_timeout,
+        false,
+        etag,
+        cancellable,
+        progress,
     ) {
         Ok(fetched) => Ok(fetched),
         Err(primary_error) if can_fallback && !(cancellable && crate::cancel::is_cancelled()) => {
@@ -232,7 +233,13 @@ pub(crate) fn fetch_server_with_progress(
             );
             progress(0);
             fetch_server_once(
-                &url, limit, fallback_timeout, true, etag, cancellable, progress,
+                &url,
+                limit,
+                fallback_timeout,
+                true,
+                etag,
+                cancellable,
+                progress,
             )
             .map_err(|fallback_error| {
                 format!("主线路失败：{primary_error}；源站直连失败：{fallback_error}")
@@ -568,13 +575,16 @@ fn validate_catalog(catalog: &Catalog) -> Result<()> {
             return Err("Skill 套件目录包含无效条目".into());
         }
         let url = Url::parse(&group.source_url).map_err(|_| "Skill 套件来源地址无效")?;
-        if url.scheme() != "https" || url.host_str().is_none()
-            || !url.username().is_empty() || url.password().is_some()
+        if url.scheme() != "https"
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
         {
             return Err("Skill 套件来源地址无效".into());
         }
         for item in &group.items {
-            if !valid_id(&item.skill_id) || !ids.contains(&item.skill_id)
+            if !valid_id(&item.skill_id)
+                || !ids.contains(&item.skill_id)
                 || !members.insert(&item.skill_id)
             {
                 return Err("Skill 套件包含未知或重复的成员".into());
@@ -841,7 +851,11 @@ impl Service {
             });
             json!({"skill":s,"downloaded":self.package_path(s).is_file(),"offlineReady":self.ready(s),"installed":!paths.is_empty(),"installedPaths":paths,"updateAvailable":update_available})
         }).collect()).unwrap_or_default();
-        let skill_groups = self.catalog.as_ref().map(|c| c.skill_groups.as_slice()).unwrap_or_default();
+        let skill_groups = self
+            .catalog
+            .as_ref()
+            .map(|c| c.skill_groups.as_slice())
+            .unwrap_or_default();
         json!({"settings":self.settings,"online":self.online,"message":self.message,"generatedAt":self.catalog.as_ref().map(|c|&c.generated_at),"skillGroups":skill_groups,"skills":skills,"runtimes":self.runtimes,"installed":installed,"dataPath":self.data,"homePath":self.home})
     }
     fn installations(&self) -> Vec<Installation> {
@@ -1784,7 +1798,11 @@ exit 1
         let staged_launcher = helper.join(&script);
         fs::write(&staged_launcher, launcher).map_err(err)?;
         crate::configuration::make_executable(&staged_launcher)?;
-        let launcher_path = target.join(".cyapi").join(&script).to_string_lossy().into_owned();
+        let launcher_path = target
+            .join(".cyapi")
+            .join(&script)
+            .to_string_lossy()
+            .into_owned();
         let verify_path = target
             .join("scripts/verify-config.mjs")
             .to_string_lossy()
@@ -1855,7 +1873,11 @@ exit 1
             let staged_launcher = helper.join(&script);
             fs::write(&staged_launcher, launcher).map_err(err)?;
             crate::configuration::make_executable(&staged_launcher)?;
-            let launcher_path = target.join(".cyapi").join(&script).to_string_lossy().into_owned();
+            let launcher_path = target
+                .join(".cyapi")
+                .join(&script)
+                .to_string_lossy()
+                .into_owned();
             let guide = if cfg!(windows) {
                 format!("\n## Windows Python（CYAPI Toolbox）\n\n使用共享 Python {} 的隔离依赖环境，已离线安装服务端锁定的 Python 依赖。执行本文所有 `python` / `python3` 命令时，请替换为 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'`，保留脚本及参数。不要改用系统 Python，也不要重复安装 Python 或修改 Codex 全局包。服务端声明的命令行工具已绑定到此启动器。其他外部工具、浏览器及联网服务按上游说明使用。\n", python.version, quote(&launcher_path))
             } else {
@@ -1948,7 +1970,11 @@ exit 1
         let staged_launcher = helper.join(&script);
         fs::write(&staged_launcher, launcher).map_err(err)?;
         crate::configuration::make_executable(&staged_launcher)?;
-        let launcher_path = target.join(".cyapi").join(&script).to_string_lossy().into_owned();
+        let launcher_path = target
+            .join(".cyapi")
+            .join(&script)
+            .to_string_lossy()
+            .into_owned();
         let guide = if cfg!(windows) {
             format!("\n## Windows Python（CYAPI Toolbox）\n\n已复用 Python {}。执行本文的 `python` / `python3` 命令时，可在 PowerShell 替换为 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File '{}'`，保留原有脚本与参数。无需重复安装 Python。\n\n本次安装包含 Skill 文件与运行时绑定；第三方 Python 包、浏览器、外部程序及 API 账号不代表已经配置。缺少第三方包时，使用复用的解释器创建所需虚拟环境，勿修改 Codex 自带 Python 的全局依赖。\n", python.version, quote(&launcher_path))
         } else {
@@ -2434,7 +2460,8 @@ mod tests {
         let mut progress = Vec::new();
         let downloaded = read_download(&bytes[..], bytes.len() as u64, &mut |count| {
             progress.push(count);
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(downloaded, bytes);
         assert_eq!(progress.first(), Some(&0));
         assert_eq!(progress.last(), Some(&150_000));
@@ -2447,7 +2474,10 @@ mod tests {
         struct CancelledReader;
         impl Read for CancelledReader {
             fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, crate::cancel::MESSAGE))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    crate::cancel::MESSAGE,
+                ))
             }
         }
         let error = read_download(CancelledReader, 100, &mut |_| {}).unwrap_err();
@@ -2468,7 +2498,9 @@ mod tests {
             }
         }
         let mut progress = Vec::new();
-        assert!(read_download(BrokenReader(false), 100, &mut |count| progress.push(count)).is_err());
+        assert!(
+            read_download(BrokenReader(false), 100, &mut |count| progress.push(count)).is_err()
+        );
         assert_eq!(progress, vec![0, 1]);
     }
 
@@ -2486,7 +2518,9 @@ mod tests {
             }]
         });
         let fetched = |value: &Value| Fetched {
-            modified: true, etag: None, bytes: serde_json::to_vec(value).unwrap(),
+            modified: true,
+            etag: None,
+            bytes: serde_json::to_vec(value).unwrap(),
         };
         service.apply_refresh(Ok(fetched(&payload))).unwrap();
         assert_eq!(service.status()["skillGroups"], payload["skillGroups"]);
@@ -2519,18 +2553,24 @@ mod tests {
         let group: SkillGroup = serde_json::from_value(json!({
             "id":"custom-suite", "title":"Suite", "description":"Description",
             "sourceUrl":"https://example.com", "items":[{"skillId":"test"}]
-        })).unwrap();
+        }))
+        .unwrap();
         catalog.skill_groups = vec![group.clone()];
         validate_catalog(&catalog).unwrap();
         for patch in [
-            json!({"id":"../invalid"}), json!({"title":""}),
+            json!({"id":"../invalid"}),
+            json!({"title":""}),
             json!({"sourceUrl":"http://example.com"}),
             json!({"sourceUrl":"https://user:secret@example.com"}),
-            json!({"items":[]}), json!({"items":[{"skillId":"missing"}]}),
+            json!({"items":[]}),
+            json!({"items":[{"skillId":"missing"}]}),
             json!({"items":[{"skillId":"test"},{"skillId":"test"}]}),
         ] {
             let mut value = serde_json::to_value(&group).unwrap();
-            value.as_object_mut().unwrap().extend(patch.as_object().unwrap().clone());
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(patch.as_object().unwrap().clone());
             catalog.skill_groups = vec![serde_json::from_value(value).unwrap()];
             assert!(validate_catalog(&catalog).is_err());
         }
@@ -2694,23 +2734,39 @@ mod tests {
             let runtime = Runtime {
                 kind: kind.into(),
                 version: minimum.into(),
-                path: root.join("runtime").join(crate::platform::executable(kind))
-                    .to_string_lossy().into_owned(),
+                path: root
+                    .join("runtime")
+                    .join(crate::platform::executable(kind))
+                    .to_string_lossy()
+                    .into_owned(),
                 source: source.into(),
             };
-            let requirements = [Requirement { kind: kind.into(), minimum: minimum.into() }];
+            let requirements = [Requirement {
+                kind: kind.into(),
+                minimum: minimum.into(),
+            }];
             if kind == "node" {
-                service.write_launcher(&stage, &target, &runtime, &requirements, &[]).unwrap();
+                service
+                    .write_launcher(&stage, &target, &runtime, &requirements, &[])
+                    .unwrap();
             } else {
-                service.write_python_launcher(&stage, &target, &runtime, &requirements, &[]).unwrap();
+                service
+                    .write_python_launcher(&stage, &target, &runtime, &requirements, &[])
+                    .unwrap();
             }
-            assert!(!target.exists(), "Launcher generation must not publish an incomplete Skill");
+            assert!(
+                !target.exists(),
+                "Launcher generation must not publish an incomplete Skill"
+            );
             let launcher = Path::new(".cyapi").join(launcher_name(kind));
             assert!(stage.join(&launcher).is_file(), "{kind}/{source}");
             let markdown = fs::read_to_string(stage.join("SKILL.md")).unwrap();
             assert!(markdown.starts_with("---\n"));
             assert!(markdown.contains(target.join(&launcher).to_str().unwrap()));
-            assert!(!markdown.contains(stage.to_str().unwrap()), "The guide must survive the directory rename");
+            assert!(
+                !markdown.contains(stage.to_str().unwrap()),
+                "The guide must survive the directory rename"
+            );
             fs::rename(&stage, &target).unwrap();
             assert!(target.join(&launcher).is_file());
             assert!(!stage.exists());
@@ -2723,8 +2779,8 @@ mod tests {
     fn integration_skill_installs_python_dependencies_with_the_shared_runtime() {
         let root = env::temp_dir().join(format!("cyapi-managed-python-{}", now()));
         let mut service = Service::new(root.join("data"), root.join("home")).unwrap();
-        service.settings.server_url = env::var("CYAPI_TEST_SERVER")
-            .expect("use server/scripts/verify-managed-python.mjs");
+        service.settings.server_url =
+            env::var("CYAPI_TEST_SERVER").expect("use server/scripts/verify-managed-python.mjs");
         service.refresh().unwrap();
         // The Skill needs an offline dependency bundle for CPython 3.14.
         let skill = service
@@ -2861,7 +2917,10 @@ print(json.dumps({'upstreamDraft': str(draft), 'tracks': len(content['tracks'])}
         let root = env::temp_dir().join(format!("cyapi-python-preview-{}", uuid::Uuid::new_v4()));
         let mut service = Service::new(root.join("data"), root.join("home")).unwrap();
         let (mut skill, _) = fixture_for("nature-academic-search");
-        skill.requirements = vec![Requirement { kind: "python".into(), minimum: "3.12.0".into() }];
+        skill.requirements = vec![Requirement {
+            kind: "python".into(),
+            minimum: "3.12.0".into(),
+        }];
         skill.python_dependencies = vec![serde_json::from_value(json!({
             "id":"nature-academic-search",
             "target":{"implementation":"cpython","python":"3.12","abi":"cp312","platform":crate::platform::current()},
@@ -2870,19 +2929,35 @@ print(json.dumps({'upstreamDraft': str(draft), 'tracks': len(content['tracks'])}
         })).unwrap()];
         service.catalog = Some(Catalog {
             skill_groups: vec![],
-            schema: 2, generated_at: "test".into(), skills: vec![skill], runtimes: vec![],
+            schema: 2,
+            generated_at: "test".into(),
+            skills: vec![skill],
+            runtimes: vec![],
         });
         service.runtimes = vec![Runtime {
-            kind: "python".into(), version: "3.14.0".into(), path: "python314".into(), source: "system".into(),
+            kind: "python".into(),
+            version: "3.14.0".into(),
+            path: "python314".into(),
+            source: "system".into(),
         }];
-        let blocked = service.preview("nature-academic-search", "codex", "global", "").unwrap();
+        let blocked = service
+            .preview("nature-academic-search", "codex", "global", "")
+            .unwrap();
         assert!(blocked["runtimes"][0]["reuse"].is_null());
         assert!(blocked["runtimes"][0]["fallback"].is_null());
-        assert!(blocked["runtimes"][0]["error"].as_str().unwrap().contains("Python 3.12"));
+        assert!(blocked["runtimes"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("Python 3.12"));
         service.runtimes.push(Runtime {
-            kind: "python".into(), version: "3.12.14".into(), path: "python312".into(), source: "codex".into(),
+            kind: "python".into(),
+            version: "3.12.14".into(),
+            path: "python312".into(),
+            source: "codex".into(),
         });
-        let ready = service.preview("nature-academic-search", "codex", "global", "").unwrap();
+        let ready = service
+            .preview("nature-academic-search", "codex", "global", "")
+            .unwrap();
         assert_eq!(ready["runtimes"][0]["reuse"]["path"], "python312");
         assert!(ready["runtimes"][0]["error"].is_null());
         fs::remove_dir_all(root).unwrap();

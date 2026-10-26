@@ -25,7 +25,9 @@ import { CyapiBalance } from './CyapiBalance';
 import { ModelPicker } from './ModelPicker';
 import { ReasoningEffortPicker } from './ReasoningEffortPicker';
 import { ContextWindowSettings } from './ContextWindowSettings';
-import { contextWindowChange, contextWindowText } from '../lib/model-settings';
+import { CodexModelSettings, settingDrafts, settingsPayload, emptySettingDraft } from './CodexModelSettings';
+import type { CodexSettingDraft } from './CodexModelSettings';
+import { contextWindowChange, contextWindowText, configuredModels } from '../lib/model-settings';
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const preview: CodexConfiguration = {
@@ -50,6 +52,7 @@ export function CodexSettings() {
   const [model, setModel] = useState('');
   const [models, setModels] = useState<string[]>([]);
   const [effort, setEffort] = useState('');
+  const [settings, setSettings] = useState<Record<string, CodexSettingDraft>>({});
   const [contextDraft, setContextDraft] = useState<string>();
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState<{ text: string; error?: boolean }>();
@@ -77,6 +80,7 @@ export function CodexSettings() {
     setModel(next.model);
     setModels(next.models ?? []);
     setEffort(next.reasoningEffort);
+    setSettings(settingDrafts(next.modelSettings));
     setContextDraft(undefined);
     setApiKey(savedKey ?? '');
     setShowKey(false);
@@ -150,6 +154,10 @@ export function CodexSettings() {
             apiKey,
             model,
             models,
+            modelSettings: settingsPayload(
+              settings,
+              configuredModels(models, model),
+            ),
             reasoningEffort: effort,
             contextWindowChange: contextWindowChange(contextDraft),
             revision: view.revision,
@@ -322,6 +330,30 @@ export function CodexSettings() {
               disabled={busy || !view}
               required
               placeholder="服务商提供的模型 ID"
+              renderModelSettings={(id, index) => {
+                const originals = settingDrafts(view?.modelSettings);
+                const draft = settings[id] ?? emptySettingDraft;
+                return (
+                  <CodexModelSettings
+                    id={`codex-permodel-${index}`}
+                    model={id}
+                    draft={draft}
+                    original={originals[id]}
+                    onChange={(next) =>
+                      setSettings((current) => ({ ...current, [id]: next }))
+                    }
+                    onReset={() =>
+                      setSettings((current) => {
+                        const next = { ...current };
+                        if (originals[id]) next[id] = originals[id];
+                        else delete next[id];
+                        return next;
+                      })
+                    }
+                    disabled={busy || !view}
+                  />
+                );
+              }}
             />
             <ReasoningEffortPicker id="codex-effort" value={effort} onChange={setEffort} />
             <ContextWindowSettings

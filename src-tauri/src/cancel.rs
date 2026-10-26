@@ -64,7 +64,10 @@ mod tests {
     fn a_cancellation_only_stops_a_running_installation() {
         let mut state = State::default();
         state.begin();
-        assert!(!state.is_cancelled(), "a new installation is never cancelled");
+        assert!(
+            !state.is_cancelled(),
+            "a new installation is never cancelled"
+        );
         state.cancel();
         assert!(state.is_cancelled(), "the running installation stops");
         state.end();

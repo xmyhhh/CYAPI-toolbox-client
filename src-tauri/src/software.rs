@@ -136,9 +136,11 @@ pub fn detect(descriptors: &[crate::integrations::Descriptor]) -> BTreeMap<Strin
 
 #[cfg(windows)]
 fn probe(declarations: &[Value]) -> Option<BTreeMap<String, Value>> {
-    windows_probe(declarations).map_err(|error| {
-        crate::logging::event("warn", "software", error);
-    }).ok()
+    windows_probe(declarations)
+        .map_err(|error| {
+            crate::logging::event("warn", "software", error);
+        })
+        .ok()
 }
 
 #[cfg(windows)]
@@ -182,7 +184,10 @@ foreach ($target in $targets) {
 ConvertTo-Json -InputObject $results -Depth 5 -Compress
 "#;
     let encoded = base64::engine::general_purpose::STANDARD.encode(
-        script.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>(),
+        script
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>(),
     );
     let mut child = Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
@@ -215,7 +220,10 @@ ConvertTo-Json -InputObject $results -Depth 5 -Compress
             Ok(Some(status)) if status.success() => break,
             Ok(Some(status)) => {
                 let _ = reader.join();
-                return Err(format!("Windows 元数据探测失败（{status}）：{}", errors.join().unwrap_or_default()));
+                return Err(format!(
+                    "Windows 元数据探测失败（{status}）：{}",
+                    errors.join().unwrap_or_default()
+                ));
             }
             Err(error) => {
                 let _ = child.kill();
@@ -235,7 +243,9 @@ ConvertTo-Json -InputObject $results -Depth 5 -Compress
         }
     }
     let _ = errors.join();
-    let bytes = reader.join().map_err(|_| "Windows 元数据读取线程失败")?
+    let bytes = reader
+        .join()
+        .map_err(|_| "Windows 元数据读取线程失败")?
         .ok_or("Windows 元数据输出过大或无法读取")?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|error| format!("Windows 元数据编码无效：{error}"))?
@@ -343,8 +353,8 @@ mod tests {
             }}),
         ];
         // The fixed probe treats catalog values as paths, never as script text.
-        let result =
-            windows_probe(&declarations).expect("Windows metadata probe must return structured output");
+        let result = windows_probe(&declarations)
+            .expect("Windows metadata probe must return structured output");
         assert_eq!(result["fixture"]["found"], true);
         assert!(result["fixture"]["version"]
             .as_str()

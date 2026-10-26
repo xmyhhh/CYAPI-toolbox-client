@@ -123,6 +123,12 @@ export interface NativePlan {
     error?: string;
   }[];
 }
+/** Per-model values declared into the generated Codex model catalog. */
+export interface CodexModelSetting {
+  contextWindow?: number | null;
+  reasoningLevels?: string[] | null;
+  defaultLevel?: string | null;
+}
 export interface CodexConfiguration {
   /** Raw explicit override; not inferred model capacity. */
   contextWindow?: unknown;
@@ -136,6 +142,7 @@ export interface CodexConfiguration {
   model: string;
   models: string[];
   reasoningEffort: string;
+  modelSettings?: Record<string, CodexModelSetting>;
   apiKeyConfigured: boolean;
   apiKey?: string;
   authMode: string;
