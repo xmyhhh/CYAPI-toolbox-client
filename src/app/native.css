@@ -2222,6 +2222,117 @@ code {
   margin-top: 18px;
 }
 
+/* Business navigation: independent from the Agent selector. */
+.workbench-shell .sidebar {
+  width: 216px;
+}
+.n-workbenches {
+  display: grid;
+  flex-shrink: 0;
+  gap: 6px;
+  padding-bottom: 18px;
+  margin-top: 26px;
+  border-bottom: 1px solid var(--workspace-sidebar-line);
+}
+.n-workbenches > button {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--workspace-sidebar-muted);
+  text-align: left;
+}
+.n-workbenches > button:hover {
+  color: var(--workspace-sidebar-strong);
+  background: var(--workspace-sidebar-hover);
+}
+.n-workbenches > button.active {
+  border-color: var(--workspace-sidebar-control-line);
+  background: var(--workspace-sidebar-active);
+  color: var(--workspace-sidebar-strong);
+}
+.n-workbenches > button > span {
+  display: grid;
+  gap: 4px;
+}
+.n-workbenches strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.n-workbenches small {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--workspace-sidebar-muted);
+}
+.workbench-shell .primary-nav {
+  margin-top: 18px;
+}
+.n-nav-label {
+  margin: 0 12px 7px;
+  font-size: 10px;
+  color: var(--workspace-sidebar-faint);
+}
+.n-creation-note {
+  margin: 20px 12px 0;
+  font-size: 11px;
+  line-height: 1.9;
+  color: var(--workspace-sidebar-faint);
+}
+.n-workflow-mode {
+  font-size: 11px;
+  color: var(--muted);
+}
+.n-main.n-main-creation {
+  display: flex;
+  padding: 0;
+  overflow: hidden;
+}
+.n-main-creation > .n-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.n-creation-host:not([hidden]) {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.n-main-creation .n-browser-note {
+  margin: 12px 24px 0;
+}
+@media (max-height: 780px) {
+  .n-workbenches {
+    margin-top: 18px;
+    padding-bottom: 12px;
+  }
+  .n-workbenches > button {
+    padding: 9px 12px;
+  }
+  .workbench-shell .n-workspace {
+    margin-top: 12px;
+  }
+  .workbench-shell .primary-nav {
+    margin-top: 12px;
+  }
+}
+@media (max-width: 700px) {
+  .workbench-shell .sidebar {
+    width: 64px;
+  }
+  .n-workbenches > button {
+    justify-content: center;
+    padding: 10px 0;
+  }
+  .n-workbenches > button > span,
+  .n-nav-label,
+  .n-creation-note,
+  .n-workflow-mode {
+    display: none;
+  }
+}
+
 /* Placeholder for capabilities that are not available yet */
 .n-agent-badge {
   padding: 3px 9px;

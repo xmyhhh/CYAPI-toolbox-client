@@ -136,7 +136,7 @@ fn allowed_url(value: &str) -> bool {
 
 /// Pages the user can open in the browser, including the official website.
 fn openable_url(value: &str) -> bool {
-    trusted_url(value, &OPEN_HOSTS)
+    trusted_url(value, &OPEN_HOSTS) || value == Service::workflow_url().as_str()
 }
 
 fn validate(manifest: &ReleaseManifest) -> Result<()> {
@@ -718,5 +718,11 @@ mod tests {
         assert!(!openable_url("https://www.cyapi.cyou.evil.example/"));
         assert!(!openable_url("https://user:pass@www.cyapi.cyou/"));
         assert!(!allowed_url("https://www.cyapi.cyou"));
+        assert!(openable_url("https://api.cyapi.cyou/workflows/"));
+        assert!(!openable_url(
+            "https://api.cyapi.cyou/workflows/?key=secret"
+        ));
+        assert!(!openable_url("https://api.cyapi.cyou/other"));
+        assert!(!allowed_url("https://api.cyapi.cyou/workflows/"));
     }
 }

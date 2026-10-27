@@ -1,0 +1,26 @@
+.wf-workspace {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface-muted);
+  overflow: hidden;
+}
+.wf-offline {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  color: var(--muted);
+  padding: 24px;
+  text-align: center;
+}
+.wf-offline h2 {
+  color: var(--text);
+  font-size: 23px;
+}
+.wf-offline p {
+  font-size: 13px;
+}

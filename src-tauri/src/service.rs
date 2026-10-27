@@ -633,6 +633,14 @@ pub struct Service {
     message: Option<String>,
 }
 impl Service {
+    /// Workflow pages use the same built-in production service as the toolbox.
+    /// Development overrides for catalog fixtures never receive login credentials.
+    pub(crate) fn workflow_url() -> tauri::Url {
+        format!("{SERVER_URL}/workflows/")
+            .parse()
+            .expect("built-in service URL")
+    }
+
     fn require_installable(skill: &Skill) -> Result<()> {
         if skill.distribution != "bundled" {
             return Err(skill

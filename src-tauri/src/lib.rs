@@ -28,6 +28,7 @@ mod service;
 mod software;
 mod update;
 mod usage;
+mod workflows;
 
 use models::Request;
 use service::Service;
@@ -332,9 +333,10 @@ pub fn run() {
             format!("安装服务初始化失败；仍可使用排查与日志功能：{error}"),
         );
     }
-    tauri::Builder::default()
-        .manage(AppService(Arc::new(Mutex::new(service))))
-        .invoke_handler(tauri::generate_handler![
+    let builder = tauri::Builder::default().manage(AppService(Arc::new(Mutex::new(service))));
+    let builder = builder.manage(workflows::Workflows::default());
+    let handler: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> =
+        Box::new(tauri::generate_handler![
             toolbox,
             toolbox_cancel,
             cyapi_routes,
@@ -344,8 +346,21 @@ pub fn run() {
             logging::log_frontend_error,
             diagnostics::diagnostics,
             codex_logs::codex_logs,
-            agent_logs::agent_logs
-        ])
-        .run(tauri::generate_context!())
-        .expect("Failed to launch CYAPI Toolbox");
+            agent_logs::agent_logs,
+            workflows::workflows,
+            workflows::reload_workflows
+        ]);
+    builder
+        .invoke_handler(move |invoke| {
+            // App commands have no remote caller. A child WebView shares the
+            // OS window, so checking only the window label is insufficient.
+            if !workflows::trusted_caller(invoke.message.webview_ref()) {
+                invoke.resolver.reject("远程页面没有本机操作权限");
+                return true;
+            }
+            handler(invoke)
+        })
+        .build(tauri::generate_context!())
+        .expect("Failed to launch CYAPI Toolbox")
+        .run(|_app, _event| {});
 }

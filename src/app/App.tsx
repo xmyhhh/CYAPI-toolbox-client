@@ -12,8 +12,11 @@ import {
   Cpu,
   Download,
   FolderOpen,
+  FilePenLine,
   Globe2,
   Grid2X2,
+  Images,
+  ListOrdered,
   LoaderCircle,
   Package,
   Plug,
@@ -24,12 +27,14 @@ import {
   SquareTerminal,
   Wifi,
   WifiOff,
+  Workflow,
   Zap,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { getVersion } from '@tauri-apps/api/app';
 import { Modal } from '../components/Primitives';
 import { ConfigurationDialog } from './ConfigurationDialog';
+import { reloadWorkflowView, WORKFLOW_URL } from '../lib/api/workflows';
 import { AppSettings } from './AppSettings';
 import { CodexSettings } from './CodexSettings';
 import { ClaudeSettings } from './ClaudeSettings';
@@ -56,6 +61,13 @@ import {
   updateTargetUrl,
 } from '../lib/api/update';
 import type { UpdateStatus } from '../lib/api/update';
+import {
+  creationSections,
+  isToolPage,
+  loadWorkbenchNavigation,
+  WORKBENCH_KEY,
+} from '../lib/workbenches';
+import type { CreationSection, ToolPage, Workbench } from '../lib/workbenches';
 import { updateProgressText } from '../lib/update-progress';
 import { CollectionCard } from '../features/skills/CollectionCard';
 import { CollectionDialog } from '../features/skills/CollectionDialog';
@@ -85,17 +97,11 @@ import {
 const UsageStatistics = lazy(() =>
   import('./UsageStatistics').then((module) => ({ default: module.UsageStatistics })),
 );
+const Workflows = lazy(() =>
+  import('./Workflows').then((module) => ({ default: module.Workflows })),
+);
 
-type Page =
-  | 'catalog'
-  | 'installed'
-  | 'codex'
-  | 'mcp'
-  | 'diagnostics'
-  | 'usage'
-  | 'environment'
-  | 'settings'
-  | 'integrations';
+type Page = ToolPage | 'settings' | 'workflows';
 type Workspace = 'codex' | 'claude' | 'opencode';
 const agents = [
   { id: 'codex', name: 'Codex', hint: 'OpenAI' },
@@ -121,6 +127,7 @@ const pages = {
   environment: '运行环境',
   settings: '设置',
   integrations: capability('integrations').title,
+  workflows: '工作流',
 };
 const sourceLabels = { codex: 'Codex 自带', system: '系统环境', managed: '工具箱共享' };
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -159,7 +166,25 @@ export default function App() {
       window.removeEventListener('toolbox-operation-failed', show);
     };
   }, []);
-  const [page, setPage] = useState<Page>('codex');
+  const [savedNavigation] = useState(loadWorkbenchNavigation);
+  const [workbench, setWorkbench] = useState<Workbench>(savedNavigation?.workbench || 'tools');
+  const [toolPage, setToolPage] = useState<ToolPage>(savedNavigation?.toolPage || 'codex');
+  const [creationSection, setCreationSection] = useState<CreationSection>(
+    savedNavigation?.creationSection || 'library',
+  );
+  const [creationRequest, setCreationRequest] = useState<{
+    section: CreationSection;
+    id: number;
+  }>();
+  const [creationLocked, setCreationLocked] = useState(false);
+  const [creationOpened, setCreationOpened] = useState(savedNavigation?.workbench === 'create');
+  const [page, setPage] = useState<Page>(workbench === 'create' ? 'workflows' : toolPage);
+  function switchWorkbench(next: Workbench) {
+    setWorkspaceOpen(false);
+    setWorkbench(next);
+    if (next === 'create') setCreationOpened(true);
+    setPage(next === 'create' ? 'workflows' : toolPage);
+  }
   const [mcpFocus, setMcpFocus] = useState<{ query: string; tab: 'catalog' | 'installed' }>();
   const [workspace, setWorkspace] = useState<Workspace>(workspaceFromStorage);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
@@ -252,6 +277,21 @@ export default function App() {
     setTarget(workspace);
   }, [workspace]);
   useEffect(() => {
+    // Creation has its own neutral/green identity, never the selected Agent's colour.
+    if (workbench === 'create') delete document.documentElement.dataset.workspace;
+    else document.documentElement.dataset.workspace = workspace;
+  }, [workbench, workspace]);
+  useEffect(() => {
+    if (isToolPage(page)) setToolPage(page);
+  }, [page]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(WORKBENCH_KEY, JSON.stringify({ workbench, toolPage, creationSection }));
+    } catch {
+      // Navigation still works if local storage is unavailable.
+    }
+  }, [workbench, toolPage, creationSection]);
+  useEffect(() => {
     if (!workspaceOpen) return;
     const close = (event: PointerEvent) => {
       if (!workspaceMenu.current?.contains(event.target as Node)) setWorkspaceOpen(false);
@@ -266,7 +306,10 @@ export default function App() {
       document.removeEventListener('keydown', escape);
     };
   }, [workspaceOpen]);
+  const toolsLoaded = useRef(false);
   useEffect(() => {
+    // A creation-only launch does not hydrate Agent routes or scan tool installations.
+    if (workbench !== 'tools' || toolsLoaded.current) return;
     let active = true;
     async function start() {
       // Hydrate persistent routes first, then refresh once in the background.
@@ -288,14 +331,17 @@ export default function App() {
       } catch (e) {
         if (active) setNotice({ text: errorText(e), error: true });
       } finally {
-        if (active) setBusy('');
+        if (active) {
+          toolsLoaded.current = true;
+          setBusy('');
+        }
       }
     }
     void start();
     return () => {
       active = false;
     };
-  }, []);
+  }, [workbench]);
   useEffect(() => {
     if (!nativeAvailable) return;
     getVersion()
@@ -623,9 +669,13 @@ export default function App() {
     page === 'codex' || page === 'mcp' || page === 'diagnostics' || page === 'usage';
 
   return (
-    <div className="app-shell">
+    <div className="app-shell workbench-shell">
       <aside className="sidebar" inert={modalOpen}>
-        <button className="brand" onClick={() => setPage('codex')} aria-label="CYAPI Toolbox 首页">
+        <button
+          className="brand"
+          onClick={() => switchWorkbench(workbench)}
+          aria-label="CYAPI Toolbox 首页"
+        >
           <span className="brand-mark">
             <Zap size={20} fill="currentColor" />
           </span>
@@ -634,84 +684,143 @@ export default function App() {
             <small>TOOLBOX</small>
           </span>
         </button>
-        <div className="n-workspace" ref={workspaceMenu}>
-          <span className="n-workspace-label">工作区</span>
-          <button
-            className="n-workspace-toggle"
-            aria-haspopup="listbox"
-            aria-expanded={workspaceOpen}
-            onClick={() => setWorkspaceOpen(!workspaceOpen)}
-          >
-            <span className={`n-workspace-dot ${workspace}`} />
-            <span>{agent.name}</span>
-            <ChevronDown size={14} className={workspaceOpen ? 'open' : ''} />
-          </button>
-          {workspaceOpen && (
-            <div className="n-workspace-menu" role="listbox" aria-label="选择 Agent 工作区">
-              {agents.map((item) => (
-                <button
-                  key={item.id}
-                  role="option"
-                  aria-selected={workspace === item.id}
-                  className={workspace === item.id ? 'active' : ''}
-                  onClick={() => {
-                    setWorkspace(item.id);
-                    setWorkspaceOpen(false);
-                  }}
-                >
-                  <span className={`n-workspace-dot ${item.id}`} />
-                  <span>
-                    <strong>{item.name}</strong>
-                    <small>{item.hint}</small>
-                  </span>
-                  {workspace === item.id && <Check size={14} />}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-        <nav className="primary-nav" aria-label="主导航">
+        <nav className="n-workbenches" aria-label="工作台切换">
           {(
             [
-              ['codex', SquareTerminal, '模型接入'],
-              ['integrations', Plug, capability('integrations').title],
-              ['catalog', Grid2X2, 'Skill 管理'],
-              ['mcp', Server, 'MCP 管理'],
-              ['environment', Cpu, '运行环境'],
-              ['usage', BarChart3, '用量统计'],
-              ['diagnostics', Activity, '日志'],
+              ['tools', SquareTerminal, '工具接入', '模型 · Skill · MCP'],
+              ['create', Workflow, '工作流', 'Workflow · 素材 · 结果'],
             ] as const
-          ).map(([id, Icon, label]) => {
-            const active = id === 'catalog' ? skillPage : page === id;
-            return (
-              <button
-                key={id}
-                className={active ? 'active' : ''}
-                onClick={() => {
-                  setMcpFocus(undefined);
-                  setPage(id);
-                }}
-                aria-current={active ? 'page' : undefined}
-                title={label}
-              >
-                <Icon size={18} />
-                <span>{label}</span>
-              </button>
-            );
-          })}
+          ).map(([id, Icon, label, hint]) => (
+            <button
+              key={id}
+              className={workbench === id ? 'active' : ''}
+              aria-pressed={workbench === id}
+              onClick={() => switchWorkbench(id)}
+            >
+              <Icon size={19} />
+              <span>
+                <strong>{label}</strong>
+                <small>{hint}</small>
+              </span>
+            </button>
+          ))}
+        </nav>
+        {workbench === 'tools' && (
+          <div className="n-workspace" ref={workspaceMenu}>
+            <span className="n-workspace-label">当前工具</span>
+            <button
+              className="n-workspace-toggle"
+              aria-haspopup="listbox"
+              aria-expanded={workspaceOpen}
+              onClick={() => setWorkspaceOpen(!workspaceOpen)}
+            >
+              <span className={`n-workspace-dot ${workspace}`} />
+              <span>{agent.name}</span>
+              <ChevronDown size={14} className={workspaceOpen ? 'open' : ''} />
+            </button>
+            {workspaceOpen && (
+              <div className="n-workspace-menu" role="listbox" aria-label="选择当前工具">
+                {agents.map((item) => (
+                  <button
+                    key={item.id}
+                    role="option"
+                    aria-selected={workspace === item.id}
+                    className={workspace === item.id ? 'active' : ''}
+                    onClick={() => {
+                      setWorkspace(item.id);
+                      setWorkspaceOpen(false);
+                    }}
+                  >
+                    <span className={`n-workspace-dot ${item.id}`} />
+                    <span>
+                      <strong>{item.name}</strong>
+                      <small>{item.hint}</small>
+                    </span>
+                    {workspace === item.id && <Check size={14} />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        <nav className="primary-nav" aria-label={workbench === 'create' ? '创作导航' : '工具导航'}>
+          {workbench === 'create' ? (
+            <>
+              <span className="n-nav-label">创作空间</span>
+              {creationSections.map(([id, label], index) => {
+                const Icon = [Workflow, FilePenLine, ListOrdered, Images][index];
+                const active = page === 'workflows' && creationSection === id;
+                return (
+                  <button
+                    key={id}
+                    className={active ? 'active' : ''}
+                    aria-current={active ? 'page' : undefined}
+                    disabled={creationLocked}
+                    title={creationLocked ? '请先完成当前操作或关闭画布 / 对话框' : label}
+                    onClick={() => {
+                      setPage('workflows');
+                      setCreationRequest((current) => ({
+                        section: id,
+                        id: (current?.id || 0) + 1,
+                      }));
+                    }}
+                  >
+                    <Icon size={18} />
+                    <span>{label}</span>
+                  </button>
+                );
+              })}
+              <p className="n-creation-note">
+                服务模拟 · 不计费
+                <br />
+                不需要配置 Agent
+              </p>
+            </>
+          ) : (
+            (
+              [
+                ['codex', SquareTerminal, '模型接入'],
+                ['integrations', Plug, capability('integrations').title],
+                ['catalog', Grid2X2, 'Skill 管理'],
+                ['mcp', Server, 'MCP 管理'],
+                ['environment', Cpu, '运行环境'],
+                ['usage', BarChart3, '用量统计'],
+                ['diagnostics', Activity, '日志'],
+              ] as const
+            ).map(([id, Icon, label]) => {
+              const active = id === 'catalog' ? skillPage : page === id;
+              return (
+                <button
+                  key={id}
+                  className={active ? 'active' : ''}
+                  onClick={() => {
+                    setMcpFocus(undefined);
+                    setPage(id);
+                  }}
+                  aria-current={active ? 'page' : undefined}
+                  title={label}
+                >
+                  <Icon size={18} />
+                  <span>{label}</span>
+                </button>
+              );
+            })
+          )}
         </nav>
         <div className="n-sidebar-bottom">
           <div className="n-sidebar-tools" role="group" aria-label="辅助工具">
-            <button
-              onClick={() => (logsOpen ? setLogsOpen(false) : openLogs())}
-              className={logsOpen ? 'active' : ''}
-              title={logsOpen ? '关闭工具箱日志' : '工具箱日志'}
-              aria-label={logsOpen ? '关闭工具箱日志' : '工具箱日志'}
-              aria-expanded={logsOpen}
-              data-logs-trigger
-            >
-              <SquareTerminal size={17} />
-            </button>
+            {workbench === 'tools' && (
+              <button
+                onClick={() => (logsOpen ? setLogsOpen(false) : openLogs())}
+                className={logsOpen ? 'active' : ''}
+                title={logsOpen ? '关闭工具箱日志' : '工具箱日志'}
+                aria-label={logsOpen ? '关闭工具箱日志' : '工具箱日志'}
+                aria-expanded={logsOpen}
+                data-logs-trigger
+              >
+                <SquareTerminal size={17} />
+              </button>
+            )}
             <button
               onClick={() => setPage('settings')}
               className={page === 'settings' ? 'active' : ''}
@@ -736,12 +845,50 @@ export default function App() {
       </aside>
       <div className="n-shell" inert={modalOpen}>
         <header className="n-page-heading">
-          <h1>{agentPage ? `${agent.name} · ${pages[page]}` : pages[page]}</h1>
+          <h1>
+            {page === 'workflows'
+              ? '工作流'
+              : agentPage
+                ? `${agent.name} · ${pages[page]}`
+                : pages[page]}
+          </h1>
+          {page === 'workflows' && (
+            <div className="n-heading-actions">
+              <span className="n-workflow-mode">参考图拼贴模拟 · 非 AI 生成 · 不计费</span>
+              <button
+                className="n-button"
+                title={WORKFLOW_URL}
+                onClick={() => void openSite(WORKFLOW_URL)}
+              >
+                <Globe2 size={14} />
+                浏览器打开
+              </button>
+              <button
+                className="n-button"
+                disabled={!nativeAvailable || creationLocked}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      '重新连接会重新载入工作台。请先保存草稿和画布；已提交任务不会取消。是否继续？',
+                    )
+                  ) {
+                    void reloadWorkflowView().catch((error) =>
+                      setNotice({ text: errorText(error), error: true }),
+                    );
+                  }
+                }}
+              >
+                <RefreshCw size={14} />
+                重新连接
+              </button>
+            </div>
+          )}
           {page !== 'codex' &&
             page !== 'mcp' &&
             page !== 'integrations' &&
             page !== 'usage' &&
             page !== 'settings' &&
+            page !== 'workflows' &&
             page !== 'diagnostics' && (
               <div className="n-heading-actions">
                 <span
@@ -762,10 +909,24 @@ export default function App() {
               </div>
             )}
         </header>
-        <main className="n-main" ref={main}>
+        <main className={`n-main${page === 'workflows' ? ' n-main-creation' : ''}`} ref={main}>
           <div className="n-content">
             {!nativeAvailable && <p className="n-browser-note">网页预览 · 本机操作请使用桌面版</p>}
             {page !== 'settings' && updateBanner}
+            {creationOpened && (
+              <div hidden={page !== 'workflows'} className="n-creation-host">
+                <Suspense fallback={<p role="status">正在加载工作流…</p>}>
+                  <Workflows
+                    visible={page === 'workflows' && !modalOpen && !logsOpen}
+                    initialSection={savedNavigation?.creationSection || 'library'}
+                    navigation={creationRequest}
+                    onSectionChange={setCreationSection}
+                    onLockedChange={setCreationLocked}
+                    theme={theme}
+                  />
+                </Suspense>
+              </div>
+            )}
             {skillPage && (
               <nav className="n-skill-tabs" aria-label="Skill 管理视图">
                 <button
@@ -784,7 +945,7 @@ export default function App() {
                 </button>
               </nav>
             )}
-            {!modalOpen && (
+            {!modalOpen && page !== 'workflows' && (
               <>
                 {page !== 'codex' &&
                   page !== 'mcp' &&
@@ -1409,12 +1570,22 @@ export default function App() {
       {help && (
         <Modal title="使用帮助" onClose={() => setHelp(false)}>
           <div className="n-help">
-            <ol>
-              <li>在设置中连接 Skill 服务端。</li>
-              <li>选择 Skill，下载文件后离线安装。</li>
-              <li>新建 Agent 会话，调用已安装的 Skill。</li>
-            </ol>
-            <p>My Image 首次使用需配置图片服务。</p>
+            <>
+              <h3>工作流</h3>
+              <p>
+                在工作流库选择模板 → 准备参考图和描述 → 保存草稿 → 显式启动 →
+                在队列和结果中查看、下载。无需安装或配置 Agent。
+              </p>
+              <p>
+                使用 CYAPI API Key 登录已部署的工作流服务。当前为参考图拼贴模拟，非 AI
+                生成、不计费。切换到工具接入不会停止上传或已提交任务；关闭客户端前请确认草稿保存，画布修改需显式保存。
+              </p>
+              <h3>工具接入</h3>
+              <p>
+                选择 Codex、Claude Code 或
+                OpenCode，再管理该工具的模型接入、Skill、MCP、用量和日志。与创作素材、草稿和任务独立。
+              </p>
+            </>
             <div className="n-help-links">
               <div className="n-help-actions">
                 <button className="n-button" onClick={() => void openSite(OFFICIAL_SITE)}>
