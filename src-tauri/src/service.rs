@@ -659,12 +659,20 @@ impl Service {
         let settings = Settings {
             server_url: SERVER_URL.into(),
         };
-        let catalog = if data.join("catalog.json").exists() {
-            let catalog = read_json(&data.join("catalog.json"))?;
-            validate_catalog(&catalog)?;
-            Some(catalog)
+        let (catalog, message) = if data.join("catalog.json").exists() {
+            match read_json(&data.join("catalog.json")).and_then(|catalog| {
+                validate_catalog(&catalog)?;
+                Ok(catalog)
+            }) {
+                Ok(catalog) => (Some(catalog), None),
+                Err(_) => {
+                    let message = "Skill 目录缓存无效，请重新同步；本机配置与已安装记录仍可使用";
+                    crate::logging::event("warn", "bootstrap", message);
+                    (None, Some(message.into()))
+                }
+            }
         } else {
-            None
+            (None, None)
         };
         let records = if data.join("installed.json").exists() {
             read_json(&data.join("installed.json"))?
@@ -679,7 +687,7 @@ impl Service {
             runtimes: vec![],
             records,
             online: false,
-            message: None,
+            message,
         };
         service.recover()?;
         service.runtimes = runtime::discover(&service.home, &service.data);
@@ -690,9 +698,7 @@ impl Service {
             .or_else(|| env::var_os(crate::platform::home_variable()))
             .ok_or("找不到用户目录")?;
         let home = PathBuf::from(home);
-        let data = env::var_os("CYAPI_TOOLBOX_DATA_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| crate::platform::data_root(&home).join("CYAPI-toolbox/data"));
+        let data = crate::logging::data_path();
         let mut service = Self::new(data, home)?;
         if let Ok(url) = env::var("CYAPI_TOOLBOX_SERVER_URL") {
             service.settings.server_url = url;
@@ -2291,6 +2297,10 @@ exit 1
                 &context,
                 request.values.as_ref().ok_or("缺少配置值")?,
                 request.flow_revision.as_deref().ok_or("缺少流程版本")?,
+                request
+                    .configuration_revision
+                    .as_deref()
+                    .ok_or("缺少配置版本，请关闭后重新打开")?,
             )
         }
     }
@@ -2514,6 +2524,29 @@ exit 1
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn damaged_skill_cache_does_not_disable_local_configuration_or_installed_records() {
+        let root = env::temp_dir().join(format!("cyapi-damaged-cache-{}", uuid::Uuid::new_v4()));
+        let data = root.join("data");
+        let home = root.join("home");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("catalog.json"), "{broken cache").unwrap();
+        fs::write(data.join("installed.json"), "[]").unwrap();
+        let mut service = Service::new(data.clone(), home.clone()).unwrap();
+        assert!(service.catalog.is_none());
+        assert!(service.message.as_ref().unwrap().contains("重新同步"));
+        service
+            .dispatch(serde_json::from_value(json!({"action":"codex-read"})).unwrap())
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(data.join("catalog.json")).unwrap(),
+            "{broken cache"
+        );
+        // An explicit isolated home must not inherit real APPDATA/XDG data paths.
+        assert!(crate::platform::data_root(&home).starts_with(&home));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn cloudflare_fallback_covers_the_project_hosts_only() {
@@ -4173,13 +4206,13 @@ print(json.dumps({'upstreamDraft': str(draft), 'tracks': len(content['tracks'])}
             .as_mut()
             .unwrap()
             .revision = "new-flow".into();
-        let stale = service.dispatch(serde_json::from_value(json!({"action":"configuration-save","recordId":record.id,"values":{},"flowRevision":view["flowRevision"]})).unwrap());
+        let stale = service.dispatch(serde_json::from_value(json!({"action":"configuration-save","recordId":record.id,"values":{},"flowRevision":view["flowRevision"],"configurationRevision":view["configurationRevision"]})).unwrap());
         assert!(stale.unwrap_err().contains("更新"));
         // Installed records retain their compatible flow even if no catalog/server is available.
         let mut offline = Service::new(root.join("data"), root.join("home")).unwrap();
         assert!(offline.catalog.is_none());
         let view = read(&mut offline);
-        offline.dispatch(serde_json::from_value(json!({"action":"configuration-save","recordId":record.id,"flowRevision":view["flowRevision"],"values":{"baseUrl":"https://example.invalid/v1","apiKey":"offline-dummy-key"}})).unwrap()).unwrap();
+        offline.dispatch(serde_json::from_value(json!({"action":"configuration-save","recordId":record.id,"flowRevision":view["flowRevision"],"configurationRevision":view["configurationRevision"],"values":{"baseUrl":"https://example.invalid/v1","apiKey":"offline-dummy-key"}})).unwrap()).unwrap();
         assert!(!read(&mut offline).to_string().contains("offline-dummy-key"));
         assert!(!offline.status().to_string().contains("offline-dummy-key"));
         assert!(root

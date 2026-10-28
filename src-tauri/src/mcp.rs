@@ -215,8 +215,11 @@ fn env_name(value: &str) -> bool {
         && value.len() <= 128
         && value
             .bytes()
-            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
-        && !value.starts_with('_')
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 fn validate_descriptor(server: &Descriptor, ids: &mut HashSet<String>, local: bool) -> Result<()> {
@@ -338,13 +341,7 @@ fn validate_token_source(source: &str) -> Result<()> {
         return Ok(());
     }
     if let Some(path) = source.strip_prefix("file:") {
-        if !path.is_empty()
-            && path.len() <= 240
-            && !path.contains('\\')
-            && !path
-                .split('/')
-                .any(|part| part.is_empty() || part.starts_with('.'))
-        {
+        if path.len() <= 240 && path.split('/').all(crate::service::safe_path) {
             return Ok(());
         }
     }
@@ -373,6 +370,47 @@ fn validate_http_url(raw: &str) -> Result<()> {
     Ok(())
 }
 
+/// Parse arguments without shell expansion. Backslashes in Windows paths stay
+/// literal; JSON arrays can express arguments containing quote characters.
+fn local_args(raw: &str) -> Result<Vec<String>> {
+    let raw = raw.trim();
+    if raw.starts_with('[') {
+        return serde_json::from_str::<Vec<String>>(raw)
+            .map_err(|_| "MCP 参数必须是 JSON 字符串数组".into());
+    }
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut started = false;
+    for ch in raw.chars() {
+        match quote {
+            Some(delimiter) if ch == delimiter => quote = None,
+            Some(_) => current.push(ch),
+            None if matches!(ch, '\'' | '"') => {
+                quote = Some(ch);
+                started = true;
+            }
+            None if ch.is_whitespace() => {
+                if started {
+                    args.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            None => {
+                current.push(ch);
+                started = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        return Err("MCP 参数引号未闭合".into());
+    }
+    if started {
+        args.push(current);
+    }
+    Ok(args)
+}
+
 /// Build a user defined entry from the values the form submitted.
 pub fn local_descriptor(values: &std::collections::BTreeMap<String, Value>) -> Result<Descriptor> {
     let text = |key: &str| {
@@ -393,10 +431,7 @@ pub fn local_descriptor(values: &std::collections::BTreeMap<String, Value>) -> R
             bearer_token_env_var: None,
         }
     } else {
-        let args = text("args")
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
+        let args = local_args(&text("args"))?;
         Transport::Stdio {
             command: text("command"),
             args,
@@ -441,7 +476,7 @@ pub fn local_descriptor(values: &std::collections::BTreeMap<String, Value>) -> R
 /// The entries the user defined on this machine.
 pub fn local_entries(data: &Path) -> Result<Vec<Descriptor>> {
     let path = local_path(data);
-    let Some(bytes) = fs::read(&path).ok() else {
+    let Some(bytes) = read_file(&path, MAX_CATALOG)? else {
         return Ok(Vec::new());
     };
     if bytes.len() as u64 > MAX_CATALOG {
@@ -462,6 +497,14 @@ fn local_path(data: &Path) -> PathBuf {
 
 /// Store or replace a user defined entry.
 pub fn save_local(data: &Path, descriptor: Descriptor) -> Result<()> {
+    if catalog(data).is_ok_and(|catalog| {
+        catalog
+            .servers
+            .iter()
+            .any(|entry| entry.id == descriptor.id)
+    }) {
+        return Err("此标识已由 MCP 广场使用，请换一个本机标识".into());
+    }
     let mut entries = local_entries(data)?;
     let mut ids = HashSet::new();
     validate_descriptor(&descriptor, &mut ids, true)?;
@@ -490,7 +533,10 @@ fn write_local(data: &Path, entries: &[Descriptor]) -> Result<()> {
     let path = local_path(data);
     fs::create_dir_all(path.parent().ok_or("路径无效")?).map_err(|_| "无法创建本机 MCP 目录")?;
     let temp = stage(&path, &bytes)?;
-    fs::rename(&temp, &path).map_err(|_| "无法保存本机 MCP 条目".to_string())
+    fs::rename(&temp, &path).map_err(|_| {
+        let _ = fs::remove_file(&temp);
+        "无法保存本机 MCP 条目".to_string()
+    })
 }
 
 /// The merged entries with the local port and token resolved.
@@ -711,6 +757,9 @@ fn codex_entry_value(item: &Item) -> Value {
     if let Some(enabled) = item.get("enabled").and_then(Item::as_bool) {
         map.insert("enabled".into(), json!(enabled));
     }
+    if let Some(name) = item.get("bearer_token_env_var").and_then(Item::as_str) {
+        map.insert("bearer_token_env_var".into(), json!(name));
+    }
     if let Some(headers) = item.get("http_headers").and_then(Item::as_table_like) {
         let mut values = Map::new();
         for (key, header) in headers.iter() {
@@ -803,16 +852,17 @@ fn new_entry_layout(snapshot: &Snapshot, workspace: &str) -> Result<OpenCodeLayo
     if workspace != "opencode" {
         return Ok(OpenCodeLayout::Flat);
     }
-    // An existing `mcp.servers` group decides the layout.
-    if parse_json_value(snapshot, "OpenCode 配置")?
-        .pointer("/mcp/servers")
-        .is_some_and(Value::is_object)
+    let doc = parse_json_value(snapshot, "OpenCode 配置")?;
+    // Native timeout defaults are metadata, not a legacy MCP named timeout.
+    if doc.pointer("/mcp/servers").is_some_and(Value::is_object)
+        || doc.pointer("/mcp/timeout").is_some_and(is_timeout_defaults)
     {
         return Ok(OpenCodeLayout::Servers);
     }
-    if parse_json_value(snapshot, "OpenCode 配置")?
+    if doc
         .get("mcp")
-        .is_some_and(Value::is_object)
+        .and_then(Value::as_object)
+        .is_some_and(|group| !group.is_empty())
     {
         return Ok(OpenCodeLayout::Flat);
     }
@@ -822,6 +872,10 @@ fn new_entry_layout(snapshot: &Snapshot, workspace: &str) -> Result<OpenCodeLayo
         return Ok(OpenCodeLayout::Servers);
     }
     Ok(OpenCodeLayout::Flat)
+}
+
+fn is_timeout_defaults(value: &Value) -> bool {
+    value.is_object() && value.get("command").is_none() && value.get("url").is_none()
 }
 
 /// The key path that holds the MCP entries of a workspace.
@@ -864,7 +918,10 @@ fn json_group_entries(doc: &Value, workspace: &str, layout: OpenCodeLayout) -> V
         return entries;
     };
     for (name, value) in group {
-        if workspace == "opencode" && layout == OpenCodeLayout::Flat && name == "servers" {
+        if workspace == "opencode"
+            && layout == OpenCodeLayout::Flat
+            && (name == "servers" || name == "timeout" && is_timeout_defaults(value))
+        {
             continue;
         }
         let transport = if value.get("url").is_some() {
@@ -1063,7 +1120,6 @@ fn token(context: &Context, source: &str) -> Result<Option<String>> {
 fn needs_local_token(descriptor: &Descriptor, workspace: &str) -> bool {
     match &descriptor.transport {
         Transport::Http {
-            token_source: Some(_),
             bearer_token_env_var: Some(_),
             ..
         } => {
@@ -1079,12 +1135,23 @@ fn needs_local_token(descriptor: &Descriptor, workspace: &str) -> bool {
     }
 }
 
-fn descriptor_token(context: &Context, descriptor: &Descriptor) -> Result<Option<String>> {
+fn descriptor_token(
+    context: &Context,
+    descriptor: &Descriptor,
+    workspace: &str,
+) -> Result<Option<String>> {
+    if !needs_local_token(descriptor, workspace) {
+        return Ok(None);
+    }
     match &descriptor.transport {
         Transport::Http {
             token_source: Some(source),
             ..
         } => token(context, source),
+        Transport::Http {
+            bearer_token_env_var: Some(name),
+            ..
+        } => token(context, &format!("env:{name}")),
         _ => Ok(None),
     }
 }
@@ -1206,12 +1273,17 @@ fn token_matches(
 ) -> bool {
     match &descriptor.transport {
         Transport::Http {
-            token_source: Some(_),
             bearer_token_env_var: Some(name),
             ..
-        } => env_credential(entry, workspace).is_some_and(|current| current == *name),
+        } if workspace != "claude" => {
+            env_credential(entry, workspace).is_some_and(|current| current == *name)
+        }
         Transport::Http {
             token_source: Some(_),
+            ..
+        }
+        | Transport::Http {
+            bearer_token_env_var: Some(_),
             ..
         } => token.is_some_and(|token| {
             header(&entry.value, workspace) == Some(format!("Bearer {token}").as_str())
@@ -1467,7 +1539,9 @@ fn write_json_entry(
                 set_string(&entry, "type", "remote");
                 set_string(&entry, "url", url);
                 set_enabled(&entry, workspace, layout, true);
-                set_value(&entry, "oauth", CstInputValue::Bool(false));
+                if bearer_token_env_var.is_some() || token.is_some() {
+                    set_value(&entry, "oauth", CstInputValue::Bool(false));
+                }
                 remove_if_present(&entry, "command");
                 remove_if_present(&entry, "args");
                 remove_if_present(&entry, "environment");
@@ -1650,6 +1724,11 @@ fn commit(data: &Path, current: &Snapshot, next: &Snapshot) -> Result<()> {
     match next.bytes() {
         Some(bytes) => {
             let temp = stage(path, bytes)?;
+            let latest = read_file(path, MAX_CLAUDE_CONFIG);
+            if latest.as_ref().ok().map(|bytes| bytes.as_deref()) != Some(current.bytes()) {
+                let _ = fs::remove_file(&temp);
+                return Err("MCP 配置已被其他程序修改，请重新检测".into());
+            }
             fs::rename(&temp, path).map_err(|_| {
                 let _ = fs::remove_file(&temp);
                 "无法替换 MCP 配置文件，请检查文件是否被占用".to_string()
@@ -1687,7 +1766,9 @@ fn status_for(
 ) -> Result<Value> {
     // A missing or unreadable local token hides the actionable install button,
     // but must not prevent the rest of the catalog from being inspected.
-    let token = descriptor_token(context, descriptor).ok().flatten();
+    let token = descriptor_token(context, descriptor, workspace)
+        .ok()
+        .flatten();
     let local_entry = local
         .iter()
         .find(|entry| entry.name == config_key(descriptor));
@@ -1701,7 +1782,7 @@ fn status_for(
         local_entry.is_some_and(|entry| legacy_blender_matches(data, entry, descriptor, workspace));
     let token_ok = local_entry
         .is_some_and(|entry| token_matches(entry, descriptor, workspace, token.as_deref()));
-    let recognized = core && (!needs_local_token(descriptor, workspace) || token_ok);
+    let recognized = core && token_ok;
     let installed = local_entry.is_some();
     let compatible = descriptor.workspaces.iter().any(|item| item == workspace);
     let token_available = !needs_local_token(descriptor, workspace) || token.is_some();
@@ -1976,7 +2057,7 @@ pub fn install_descriptor(
             return Err("已存在同名 MCP 配置，请先检查配置内容".into());
         }
     }
-    let token = descriptor_token(context, descriptor)?;
+    let token = descriptor_token(context, descriptor, workspace)?;
     if needs_local_token(descriptor, workspace) && token.is_none() {
         return Err("未找到本机 MCP 令牌，请先在本机配置后再接入".into());
     }
@@ -2042,7 +2123,7 @@ pub fn adopt_descriptor(
         .find(|entry| entry.name == config_key(descriptor))
         .ok_or("本机没有可接管的 MCP 配置")?;
     require_editable(entry, workspace)?;
-    let token = descriptor_token(context, descriptor)?;
+    let token = descriptor_token(context, descriptor, workspace)?;
     if !core_matches(entry, descriptor, workspace)
         || !token_matches(entry, descriptor, workspace, token.as_deref())
     {
@@ -2958,7 +3039,7 @@ env = { BLENDER_HOST = "127.0.0.2", BLENDER_PORT = "9000", SECRET = "not-for-pro
                             assert!(header(&entry.value, workspace).is_none());
                             assert!(entry.value.get("bearer_token_env_var").is_none());
                         } else {
-                            let token = descriptor_token(&context, descriptor).unwrap();
+                            let token = descriptor_token(&context, descriptor, workspace).unwrap();
                             assert!(token_matches(
                                 entry,
                                 descriptor,
@@ -3118,6 +3199,211 @@ env = { BLENDER_HOST = "127.0.0.2", BLENDER_PORT = "9000", SECRET = "not-for-pro
             .unwrap()
             .contains("my-server"));
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn custom_arguments_preserve_spaces_windows_paths_and_empty_values() {
+        assert_eq!(
+            local_args(r#"--path "C:\Program Files\MCP\" --name 'two words' """#).unwrap(),
+            [
+                "--path",
+                r"C:\Program Files\MCP\",
+                "--name",
+                "two words",
+                ""
+            ]
+        );
+        assert_eq!(
+            local_args(r#"["--path", "C:\\Program Files\\MCP", "quote\"value", ""]"#).unwrap(),
+            ["--path", r"C:\Program Files\MCP", "quote\"value", ""]
+        );
+        assert_eq!(local_args(" --port 8080 ").unwrap(), ["--port", "8080"]);
+        assert!(local_args("--path \"unclosed").is_err());
+        assert!(local_args("[1, true]").is_err());
+    }
+
+    #[test]
+    fn environment_credentials_roundtrip_in_all_workspaces_and_detect_wrong_references() {
+        let (base, context) = fixture();
+        let data = base.join("data");
+        let mut descriptor = catalog(&data).unwrap().servers[1].clone();
+        if let Transport::Http {
+            bearer_token_env_var,
+            ..
+        } = &mut descriptor.transport
+        {
+            *bearer_token_env_var = Some("REMOTE_TOKEN".into());
+        }
+        for workspace in WORKSPACES {
+            install_descriptor(
+                &data,
+                &context,
+                workspace,
+                &descriptor,
+                &revision(&context, workspace, "orbit-ssh"),
+            )
+            .unwrap();
+            let status = descriptor_status(&data, &context, workspace, &descriptor).unwrap();
+            assert_eq!(status["recognized"], true, "{workspace}: {status}");
+            let mut local = entries(&snapshot(&context, workspace).unwrap(), workspace).unwrap();
+            let token = descriptor_token(&context, &descriptor, workspace).unwrap();
+            assert!(token_matches(
+                &local[0],
+                &descriptor,
+                workspace,
+                token.as_deref()
+            ));
+            if workspace == "codex" {
+                local[0].value["bearer_token_env_var"] = json!("WRONG_TOKEN");
+            } else {
+                local[0].value["headers"]["Authorization"] = json!("Bearer wrong-token");
+            }
+            assert!(!token_matches(
+                &local[0],
+                &descriptor,
+                workspace,
+                token.as_deref()
+            ));
+        }
+        // A malformed local token must not block agents that only write a reference.
+        fs::write(
+            context.app_data.join("OrbitSSH/mcp-token"),
+            "invalid token with spaces",
+        )
+        .unwrap();
+        for workspace in ["codex", "opencode"] {
+            install_descriptor(
+                &data,
+                &context,
+                workspace,
+                &descriptor,
+                &revision(&context, workspace, "orbit-ssh"),
+            )
+            .unwrap();
+            assert!(
+                !fs::read_to_string(snapshot(&context, workspace).unwrap().path())
+                    .unwrap()
+                    .contains("test-token-123")
+            );
+        }
+        assert!(descriptor_token(&context, &descriptor, "claude").is_err());
+        for name in ["REMOTE_TOKEN", "_private", "lowercase_token"] {
+            assert!(env_name(name));
+        }
+        assert!(!env_name("1TOKEN"));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn native_mcp_timeout_defaults_are_not_servers_and_choose_native_layout() {
+        let (base, context) = fixture();
+        let data = base.join("data");
+        let path = context.opencode_config.resolve().unwrap();
+        fs::write(&path, r#"{"mcp":{"timeout":{"startup":45000}}}"#).unwrap();
+        assert!(view(&data, &context, "opencode").unwrap()["local"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        install(
+            &data,
+            &context,
+            "opencode",
+            "codegraph",
+            &revision(&context, "opencode", "codegraph"),
+        )
+        .unwrap();
+        let doc = parse_json_value(&snapshot(&context, "opencode").unwrap(), "test").unwrap();
+        assert_eq!(doc["mcp"]["timeout"]["startup"], 45000);
+        assert_eq!(doc["mcp"]["servers"]["codegraph"]["disabled"], false);
+        assert_eq!(
+            view(&data, &context, "opencode").unwrap()["local"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        // A real legacy server called timeout must still be discoverable.
+        assert_eq!(
+            json_entries(&json!({"mcp":{"timeout":{"command":["tool"]}}}), "opencode").len(),
+            1
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn public_http_entries_preserve_oauth_defaults_and_existing_oauth_settings() {
+        let (base, context) = fixture();
+        let data = base.join("data");
+        let mut descriptor = catalog(&data).unwrap().servers[1].clone();
+        descriptor.transport = Transport::Http {
+            url: "https://example.com/mcp".into(),
+            token_source: None,
+            bearer_token_env_var: None,
+        };
+        for oauth in [
+            None,
+            Some(json!({"client_id":"keep-client"})),
+            Some(json!(false)),
+        ] {
+            let mut entry = json!({"type":"remote","url":"https://example.com/mcp"});
+            if let Some(value) = &oauth {
+                entry["oauth"] = value.clone();
+            }
+            let current = Snapshot::Json {
+                path: context.opencode_config.resolve().unwrap(),
+                bytes: Some(
+                    serde_json::to_vec(&json!({"mcp":{"servers":{"orbit-ssh":entry}}})).unwrap(),
+                ),
+            };
+            let bytes = write_json_entry(
+                &current,
+                &descriptor,
+                "opencode",
+                OpenCodeLayout::Servers,
+                None,
+            )
+            .unwrap();
+            let next = parse_json_value(&next_snapshot(&current, bytes), "test").unwrap();
+            assert_eq!(
+                next["mcp"]["servers"]["orbit-ssh"].get("oauth"),
+                oauth.as_ref()
+            );
+        }
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn local_catalog_errors_and_reserved_ids_do_not_silently_replace_entries() {
+        let (base, context) = fixture();
+        let data = base.join("data");
+        let descriptor = catalog(&data).unwrap().servers[0].clone();
+        assert!(save_local(&data, descriptor.clone())
+            .unwrap_err()
+            .contains("广场"));
+        assert!(!local_path(&data).exists());
+        fs::create_dir(local_path(&data)).unwrap();
+        assert!(local_entries(&data).is_err());
+        assert!(save_local(&data, descriptor).is_err());
+        assert!(local_path(&data).is_dir());
+        assert!(!context.codex_config.exists());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn file_token_sources_stay_relative_to_application_data() {
+        assert!(validate_token_source("file:Example/mcp-token").is_ok());
+        for source in [
+            "file:",
+            "file:C:/private/token",
+            "file:/private/token",
+            "file:../token",
+            "file:Example/../token",
+            "file:Example\\token",
+            "file:Example/token:stream",
+            "file:Example/NUL",
+        ] {
+            assert!(validate_token_source(source).is_err(), "{source}");
+        }
     }
 
     #[test]

@@ -182,31 +182,69 @@ pub fn read(data: &Path) -> View {
         },
     }
 }
+fn models_endpoint(base_url: &str) -> Result<Url> {
+    let mut url = Url::parse(base_url).map_err(|_| "线路地址无效")?;
+    let path = url.path().trim_end_matches('/');
+    let path = if path.is_empty() {
+        "/v1/models".into()
+    } else if path.ends_with("/models") {
+        path.to_string()
+    } else {
+        format!("{path}/models")
+    };
+    url.set_path(&path);
+    Ok(url)
+}
+
 fn measure(route: &Route) -> Measurement {
-    // Three attempts per route; the reported latency is the mean of the ones
-    // that answered. Failures are not surfaced as a packet-loss number.
+    // Time fresh unauthenticated GETs until response headers arrive, without
+    // downloading the model list. HTTP errors still have measurable latency.
     const ATTEMPTS: usize = 3;
     let mut samples = Vec::new();
-    let mut message = "连接超时或暂不可用".to_string();
+    let mut errors = Vec::new();
+    let mut auth_required = false;
     for _ in 0..ATTEMPTS {
-        // Never accept credentials or use the user's key. Do not follow cross-origin redirects.
-        let started = Instant::now();
+        // Client setup is outside the timer. Each attempt includes connection
+        // setup, follows no redirects, and has no API Key or cookie store.
         let response = client().and_then(|client| {
-            client
-                .get(format!("{}/models", route.base_url.trim_end_matches('/')))
+            let request = client
+                .get(models_endpoint(&route.base_url)?)
+                .header(reqwest::header::ACCEPT, "application/json")
+                .header(reqwest::header::CACHE_CONTROL, "no-cache");
+            let started = Instant::now();
+            request
                 .send()
-                .map_err(|_| "连接失败".into())
+                .map(|response| {
+                    (
+                        response.status(),
+                        started.elapsed().as_millis().max(1) as u64,
+                    )
+                })
+                .map_err(|error| {
+                    if error.is_timeout() {
+                        "连接超时"
+                    } else {
+                        "连接失败"
+                    }
+                    .into()
+                })
         });
         match response {
-            Ok(response) if response.status().is_success() || response.status().as_u16() == 401 => {
-                samples.push(started.elapsed().as_millis().max(1) as u64);
-            }
-            Ok(response) => {
-                message = format!("HTTP {}", response.status().as_u16());
-                break;
+            Ok((status, latency)) => {
+                samples.push(latency);
+                if status.as_u16() == 401 {
+                    auth_required = true;
+                } else if !status.is_success() {
+                    let message = format!("HTTP {}", status.as_u16());
+                    if !errors.contains(&message) {
+                        errors.push(message);
+                    }
+                }
             }
             Err(error) => {
-                message = error;
+                if !errors.contains(&error) {
+                    errors.push(error);
+                }
             }
         }
     }
@@ -214,12 +252,18 @@ fn measure(route: &Route) -> Measurement {
         (!samples.is_empty()).then(|| samples.iter().sum::<u64>() / samples.len() as u64);
     Measurement {
         route_id: route.id.clone(),
-        reachable: latency_ms.is_some(),
+        reachable: samples.len() == ATTEMPTS && errors.is_empty(),
         latency_ms,
-        message: if latency_ms.is_some() {
-            "可连接".into()
+        message: if !errors.is_empty() {
+            format!(
+                "{}；响应 {}/{ATTEMPTS} 次",
+                errors.join(" / "),
+                samples.len()
+            )
+        } else if auth_required {
+            "接口可达（HTTP 401，未携带 API Key）；响应 3/3 次".into()
         } else {
-            message
+            "接口可达；响应 3/3 次".into()
         },
     }
 }
@@ -312,7 +356,13 @@ mod tests {
                 let size = socket.read(&mut request).unwrap();
                 let text = String::from_utf8_lossy(&request[..size]).to_lowercase();
                 assert!(text.starts_with("get /v1/models http/1.1"));
-                assert!(!text.contains("authorization:") && !text.contains("cookie:"));
+                assert!(
+                    !text.contains("authorization:")
+                        && !text.contains("cookie:")
+                        && !text.contains("x-api-key:")
+                );
+                assert!(text.contains("accept: application/json"));
+                assert!(text.contains("cache-control: no-cache"));
                 socket.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
             }
         });
@@ -323,16 +373,65 @@ mod tests {
         });
         server.join().unwrap();
         assert!(result.reachable && result.latency_ms.is_some());
+        assert!(result.message.contains("401"));
     }
     #[test]
     fn redirects_and_server_errors_are_not_ranked_as_healthy_routes() {
         for status in [
             "302 Found\r\nLocation: http://127.0.0.1:1/",
+            "403 Forbidden",
+            "404 Not Found",
+            "429 Too Many Requests",
             "500 Internal Server Error",
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let url = format!("http://{}/v1", listener.local_addr().unwrap());
             let server = std::thread::spawn(move || {
+                for _ in 0..3 {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    let mut request = [0u8; 4096];
+                    socket.read(&mut request).unwrap();
+                    write!(
+                        socket,
+                        "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                }
+            });
+            let result = measure(&Route {
+                id: "test".into(),
+                name: "test".into(),
+                base_url: url,
+            });
+            server.join().unwrap();
+            assert!(!result.reachable && result.latency_ms.is_some());
+            assert!(result.message.contains(&status[..3]));
+        }
+    }
+
+    #[test]
+    fn model_probe_paths_preserve_api_prefixes_without_duplicate_suffixes() {
+        for (base, expected) in [
+            ("https://example.test", "/v1/models"),
+            ("https://example.test/", "/v1/models"),
+            ("https://example.test/v1/", "/v1/models"),
+            ("https://example.test/proxy/v1", "/proxy/v1/models"),
+            ("https://example.test/v1/models/", "/v1/models"),
+        ] {
+            assert_eq!(models_endpoint(base).unwrap().path(), expected);
+        }
+    }
+
+    #[test]
+    fn a_good_first_response_does_not_hide_later_http_errors() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for status in [
+                "401 Unauthorized",
+                "500 Internal Server Error",
+                "401 Unauthorized",
+            ] {
                 let (mut socket, _) = listener.accept().unwrap();
                 let mut request = [0u8; 4096];
                 socket.read(&mut request).unwrap();
@@ -341,14 +440,44 @@ mod tests {
                     "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 )
                 .unwrap();
-            });
-            let result = measure(&Route {
-                id: "test".into(),
-                name: "test".into(),
-                base_url: url,
-            });
-            server.join().unwrap();
-            assert!(!result.reachable && result.latency_ms.is_none());
-        }
+            }
+        });
+        let result = measure(&Route {
+            id: "test".into(),
+            name: "test".into(),
+            base_url: url,
+        });
+        server.join().unwrap();
+        assert!(result.latency_ms.is_some());
+        assert!(!result.reachable);
+        assert!(result.message.contains("500"));
+        assert!(result.message.contains("3/3"));
+    }
+
+    #[test]
+    fn latency_does_not_wait_for_the_model_list_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let (done, wait) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let mut sockets = Vec::new();
+            for _ in 0..3 {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut request = [0u8; 4096];
+                socket.read(&mut request).unwrap();
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000000\r\n\r\n").unwrap();
+                sockets.push(socket);
+            }
+            // Hold the responses open without sending any body bytes.
+            wait.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        let result = measure(&Route {
+            id: "test".into(),
+            name: "test".into(),
+            base_url: url,
+        });
+        done.send(()).unwrap();
+        server.join().unwrap();
+        assert!(result.reachable && result.latency_ms.is_some());
     }
 }

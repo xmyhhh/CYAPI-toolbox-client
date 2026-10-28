@@ -187,6 +187,13 @@ pub fn home_variable() -> &'static str {
 
 /// The root directory that holds the toolbox data, cache and install records.
 pub fn data_root(home: &std::path::Path) -> std::path::PathBuf {
+    if std::env::var_os("CYAPI_TOOLBOX_HOME_DIR").is_some() || !is_default_home(home) {
+        return home.join(if cfg!(windows) {
+            local_app_data_relative()
+        } else {
+            app_data_relative()
+        });
+    }
     if cfg!(windows) {
         return std::env::var_os("LOCALAPPDATA")
             .map(std::path::PathBuf::from)

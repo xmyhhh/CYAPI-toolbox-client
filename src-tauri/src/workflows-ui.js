@@ -28,17 +28,18 @@
           pending = message.section;
         }
         const login = document.querySelector('#login-form');
+        const auxiliary = document.querySelector('#key-form, .onboarding, .settings-box');
         let active = document.querySelector('.tabs .active')?.dataset.action;
         // Clicking the service's own tab preserves its save-before-navigation and
         // busy/upload/modal guards. Never reload a draft or replay a submission.
-        if (pending && !login && !locked() && active) {
+        if (pending && !login && !locked() && (active || auxiliary)) {
           if (pending !== active)
             document.querySelector(`.tabs [data-action="${pending}"]`)?.click();
           pending = undefined;
           active = document.querySelector('.tabs .active')?.dataset.action;
         }
         return {
-          ready: Boolean(login || active),
+          ready: Boolean(login || active || auxiliary),
           section: sections.has(active) ? active : null,
           locked: locked(),
         };

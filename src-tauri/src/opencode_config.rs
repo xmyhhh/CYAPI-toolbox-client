@@ -666,6 +666,10 @@ fn commit(location: &Location, current: &Snapshot, next: &Snapshot) -> Result<()
     match next.bytes.as_ref() {
         Some(bytes) => {
             let temp = stage(&path, bytes)?;
+            if snapshot(location).as_ref().ok() != Some(current) {
+                let _ = fs::remove_file(&temp);
+                return Err("OpenCode 配置已被其他程序修改，请重新读取".into());
+            }
             fs::rename(&temp, &path).map_err(|_| {
                 let _ = fs::remove_file(&temp);
                 "无法替换 OpenCode 配置文件，请检查是否被占用".into()

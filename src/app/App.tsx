@@ -34,7 +34,6 @@ import ReactMarkdown from 'react-markdown';
 import { getVersion } from '@tauri-apps/api/app';
 import { Modal } from '../components/Primitives';
 import { ConfigurationDialog } from './ConfigurationDialog';
-import { reloadWorkflowView, WORKFLOW_URL } from '../lib/api/workflows';
 import { AppSettings } from './AppSettings';
 import { CodexSettings } from './CodexSettings';
 import { ClaudeSettings } from './ClaudeSettings';
@@ -771,9 +770,8 @@ export default function App() {
                 );
               })}
               <p className="n-creation-note">
-                服务模拟 · 不计费
-                <br />
-                不需要配置 Agent
+                费用以运行前报价为准
+                <br />在 Key 管理中激活
               </p>
             </>
           ) : (
@@ -852,37 +850,6 @@ export default function App() {
                 ? `${agent.name} · ${pages[page]}`
                 : pages[page]}
           </h1>
-          {page === 'workflows' && (
-            <div className="n-heading-actions">
-              <span className="n-workflow-mode">执行模式与费用以工作流页面显示为准</span>
-              <button
-                className="n-button"
-                title={WORKFLOW_URL}
-                onClick={() => void openSite(WORKFLOW_URL)}
-              >
-                <Globe2 size={14} />
-                浏览器打开
-              </button>
-              <button
-                className="n-button"
-                disabled={!nativeAvailable || creationLocked}
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      '重新连接会重新载入工作台。请先保存草稿和画布；已提交任务不会取消。是否继续？',
-                    )
-                  ) {
-                    void reloadWorkflowView().catch((error) =>
-                      setNotice({ text: errorText(error), error: true }),
-                    );
-                  }
-                }}
-              >
-                <RefreshCw size={14} />
-                重新连接
-              </button>
-            </div>
-          )}
           {page !== 'codex' &&
             page !== 'mcp' &&
             page !== 'integrations' &&
@@ -1577,7 +1544,8 @@ export default function App() {
                 在队列和结果中查看、下载。无需安装或配置 Agent。
               </p>
               <p>
-                工作流使用独立的 CYAPI API Key，不读取或改变工具接入中的 Key。请先查看工作流页面的执行模式与费用，再确认启动；页面标为模拟时不是真实生图，也不产生真实费用。
+                工作流使用独立的 CYAPI API Key，不读取或改变工具接入中的
+                Key。请先查看工作流页面的执行模式与费用，再确认启动；页面标为模拟时不是真实生图，也不产生真实费用。
               </p>
               <p>
                 切换到工具接入不会停止上传或已提交任务；关闭客户端前请确认草稿保存，画布修改需显式保存。任务状态待核对时，请先查看队列和结果，不要重复启动。

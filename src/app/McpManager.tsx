@@ -631,8 +631,12 @@ function WorkspaceMcpManager({
                       <input
                         value={localForm.args}
                         placeholder="--port 8080"
+                        aria-describedby="mcp-args-help"
                         onChange={(e) => setLocalForm({ ...localForm, args: e.target.value })}
                       />
+                      <small id="mcp-args-help">
+                        空格分隔，含空格的参数用引号包裹；也支持 JSON 字符串数组。
+                      </small>
                     </label>
                   </>
                 ) : (

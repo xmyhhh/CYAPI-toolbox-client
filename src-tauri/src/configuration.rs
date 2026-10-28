@@ -342,6 +342,31 @@ fn env_pair(line: &str) -> Option<(&str, &str)> {
         None
     }
 }
+fn env_value(raw: &str) -> Result<String> {
+    let invalid = || "已有 .env 引号无效，未覆盖文件".to_string();
+    if raw.starts_with('"') {
+        let mut stream = serde_json::Deserializer::from_str(raw).into_iter::<String>();
+        let value = stream.next().ok_or_else(invalid)?.map_err(|_| invalid())?;
+        let rest = raw[stream.byte_offset()..].trim();
+        if !rest.is_empty() && !rest.starts_with('#') {
+            return Err(invalid());
+        }
+        Ok(value)
+    } else if let Some(rest) = raw.strip_prefix('\'') {
+        let (value, rest) = rest.split_once('\'').ok_or_else(invalid)?;
+        if !rest.trim().is_empty() && !rest.trim().starts_with('#') {
+            return Err(invalid());
+        }
+        Ok(value.to_string())
+    } else {
+        Ok(raw
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .trim_end()
+            .to_string())
+    }
+}
 fn parse(format: &str, bytes: Option<&[u8]>) -> Result<Value> {
     let Some(bytes) = bytes else {
         return Ok(json!({}));
@@ -363,17 +388,7 @@ fn parse(format: &str, bytes: Option<&[u8]>) -> Result<Value> {
                     continue;
                 }
                 let (key, raw) = env_pair(line).ok_or("已有 .env 配置无效，未覆盖文件")?;
-                let value = if raw.starts_with('"') {
-                    serde_json::from_str::<String>(raw)
-                        .map_err(|_| "已有 .env 引号无效，未覆盖文件")?
-                } else if raw.starts_with('\'') {
-                    raw.strip_prefix('\'')
-                        .and_then(|v| v.strip_suffix('\''))
-                        .ok_or("已有 .env 引号无效，未覆盖文件")?
-                        .to_string()
-                } else {
-                    raw.to_string()
-                };
+                let value = env_value(raw)?;
                 map.insert(key.into(), Value::String(value));
             }
             Value::Object(map)
@@ -395,6 +410,10 @@ fn at<'a>(value: &'a Value, key: &[String]) -> Option<&'a Value> {
 fn stored_value(field: &Field, format: &str, value: &Value) -> Result<Value> {
     // dotenv stores scalars as strings; restore the declared type for the form and validation.
     if format == "dotenv" && ["number", "boolean"].contains(&field.r#type.as_str()) {
+        if empty(value) {
+            check_value(field, &Value::Null)?;
+            return Ok(Value::Null);
+        }
         let parsed = serde_json::from_str::<Value>(value.as_str().unwrap_or(""))
             .map_err(|_| format!("{}：已有配置类型无效", field.label))?;
         check_value(field, &parsed)?;
@@ -415,6 +434,22 @@ fn put(value: &mut Value, key: &[String], data: Value) -> Result<()> {
         .insert(key.last().unwrap().clone(), data);
     Ok(())
 }
+fn remove(value: &mut Value, key: &[String]) {
+    let mut node = value;
+    for k in &key[..key.len() - 1] {
+        let Some(child) = node.get_mut(k) else { return };
+        node = child;
+    }
+    if let Some(map) = node.as_object_mut() {
+        map.remove(key.last().unwrap());
+    }
+}
+
+fn files_revision(files: &[(PathBuf, Option<Vec<u8>>)]) -> Result<String> {
+    serde_json::to_vec(files)
+        .map(|bytes| crate::service::hash(&bytes))
+        .map_err(|_| "无法生成配置版本".into())
+}
 fn encode(file: &ConfigFile, value: &Value, original: Option<&[u8]>) -> Result<Vec<u8>> {
     let text = match file.format.as_str() {
         "json" => format!(
@@ -433,7 +468,7 @@ fn encode(file: &ConfigFile, value: &Value, original: Option<&[u8]>) -> Result<V
             {
                 if let Some((key, _)) = env_pair(line) {
                     if file.bindings.iter().any(|b| b.key[0] == key) {
-                        if seen.insert(key.to_string()) {
+                        if seen.insert(key.to_string()) && !value[key].is_null() {
                             lines.push(env_line(key, &value[key]));
                         }
                         continue;
@@ -464,11 +499,14 @@ pub fn view(flow: &Flow, ctx: &Context) -> Result<Value> {
     let mut values = Values::new();
     let mut secrets: BTreeMap<String, bool> = BTreeMap::new();
     let mut files = vec![];
+    let mut snapshots = vec![];
     for step in &flow.steps {
         for field in &step.fields {
             if field.r#type != "secret" {
                 if let Some(v) = &field.default_value {
                     values.insert(field.id.clone(), v.clone());
+                } else if field.r#type == "boolean" {
+                    values.insert(field.id.clone(), json!(false));
                 }
             }
         }
@@ -496,9 +534,10 @@ pub fn view(flow: &Flow, ctx: &Context) -> Result<Value> {
                 values.insert(field.id.clone(), stored_value(field, &file.format, value)?);
             }
         }
+        snapshots.push((path, bytes));
     }
     Ok(
-        json!({"flow":flow,"flowRevision":crate::service::hash(&serde_json::to_vec(flow).map_err(|_| "配置流程无效")?),"values":values,"configuredSecrets":secrets,"files":files}),
+        json!({"flow":flow,"flowRevision":crate::service::hash(&serde_json::to_vec(flow).map_err(|_| "配置流程无效")?),"configurationRevision":files_revision(&snapshots)?,"values":values,"configuredSecrets":secrets,"files":files}),
     )
 }
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -565,7 +604,13 @@ pub(crate) fn stage(path: &Path, bytes: &[u8]) -> Result<PathBuf> {
     }
     result.map(|_| temp)
 }
-pub fn save(flow: &Flow, ctx: &Context, values: &Values, revision: &str) -> Result<Value> {
+pub fn save(
+    flow: &Flow,
+    ctx: &Context,
+    values: &Values,
+    revision: &str,
+    configuration_revision: &str,
+) -> Result<Value> {
     validate(flow)?;
     // Bind the submitted form to the exact flow rendered, even when the server is refreshed.
     if crate::service::hash(&serde_json::to_vec(flow).map_err(|_| "配置流程无效")?) != revision
@@ -584,28 +629,37 @@ pub fn save(flow: &Flow, ctx: &Context, values: &Values, revision: &str) -> Resu
     // Validate all files and inputs first. Never put secret values in errors, logs or backups.
     let mut prepared = vec![];
     let mut paths = HashSet::new();
+    let mut snapshots = vec![];
     for file in &flow.files {
         let path = target(file, ctx)?;
+        let original = read_bytes(&path)?;
+        snapshots.push((path, original));
+    }
+    if files_revision(&snapshots)? != configuration_revision {
+        return Err("配置文件已被其他程序修改，请关闭后重新打开".into());
+    }
+    for (file, (path, original)) in flow.files.iter().zip(snapshots) {
         if !paths.insert(path.to_string_lossy().replace('\\', "/").to_lowercase()) {
             return Err("配置文件路径重复".into());
         }
-        let original = read_bytes(&path)?;
         let mut content = parse(&file.format, original.as_deref())?;
         for binding in &file.bindings {
             let field = fields[binding.field.as_str()];
             let submitted = values
                 .get(&field.id)
                 .filter(|v| !(field.r#type == "secret" && empty(v)));
-            let previous = at(&content, &binding.key)
-                .map(|v| stored_value(field, &file.format, v))
-                .transpose()?;
-            let value = submitted
-                .or(previous.as_ref())
-                .or(field.default_value.as_ref())
-                .cloned()
-                .unwrap_or(Value::Null);
+            let value = match submitted {
+                Some(value) => value.clone(),
+                None => at(&content, &binding.key)
+                    .map(|v| stored_value(field, &file.format, v))
+                    .transpose()?
+                    .or_else(|| field.default_value.clone())
+                    .unwrap_or(Value::Null),
+            };
             check_value(field, &value)?;
-            if !value.is_null() {
+            if value.is_null() {
+                remove(&mut content, &binding.key);
+            } else {
                 put(&mut content, &binding.key, value)?;
             }
         }
@@ -641,7 +695,12 @@ pub fn save(flow: &Flow, ctx: &Context, values: &Values, revision: &str) -> Resu
     })();
     let mut rollback_failed = false;
     if result.is_err() {
-        for (path, original, _) in prepared.iter().take(committed).rev() {
+        for (path, original, written) in prepared.iter().take(committed).rev() {
+            if no_links(path).is_err() || read_bytes(path).ok().flatten().as_ref() != Some(written)
+            {
+                rollback_failed = true;
+                continue;
+            }
             let restored = match original {
                 Some(bytes) => stage(path, bytes).and_then(|temp| {
                     fs::rename(&temp, path).map_err(|_| {
@@ -666,6 +725,18 @@ pub fn save(flow: &Flow, ctx: &Context, values: &Values, revision: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn save(flow: &Flow, ctx: &Context, values: &Values, revision: &str) -> Result<Value> {
+        let snapshots = flow
+            .files
+            .iter()
+            .map(|file| {
+                let path = target(file, ctx)?;
+                let bytes = read_bytes(&path)?;
+                Ok((path, bytes))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        super::save(flow, ctx, values, revision, &files_revision(&snapshots)?)
+    }
     fn fixture() -> (Flow, Context, PathBuf) {
         let root = std::env::temp_dir().join(format!(
             "cyapi-config-test-{}-{}",
@@ -888,6 +959,100 @@ mod tests {
         assert_eq!(read["values"]["enabled"], false);
         let v = serde_json::from_value(read["values"].clone()).unwrap();
         save(&flow, &ctx, &v, &revision(&flow)).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_file_snapshots_block_all_writes_even_when_the_flow_is_unchanged() {
+        let (mut flow, ctx, root) = fixture();
+        let mut second = flow.files[0].clone();
+        second.path = "demo/second.json".into();
+        flow.files.push(second);
+        let before = view(&flow, &ctx).unwrap();
+        let path = target(&flow.files[1], &ctx).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let external = br#"{"count":9,"unrelated":true}"#;
+        fs::write(&path, external).unwrap();
+        let error = super::save(
+            &flow,
+            &ctx,
+            &values(),
+            &revision(&flow),
+            before["configurationRevision"].as_str().unwrap(),
+        )
+        .unwrap_err();
+        assert!(error.contains("其他程序修改"));
+        assert_eq!(fs::read(&path).unwrap(), external);
+        assert!(!target(&flow.files[0], &ctx).unwrap().exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clearing_optional_numbers_removes_old_values_in_every_format() {
+        for format in ["json", "yaml", "dotenv"] {
+            let (mut flow, ctx, root) = fixture();
+            flow.steps[0].fields[2].default_value = None;
+            flow.files[0].format = format.into();
+            flow.files[0].path = format!(
+                "demo/config.{}",
+                if format == "dotenv" { "env" } else { format }
+            );
+            if format == "dotenv" {
+                for binding in &mut flow.files[0].bindings {
+                    binding.key = vec![binding.field.to_uppercase()];
+                }
+            }
+            let mut input = values();
+            input.insert("count".into(), json!(8));
+            save(&flow, &ctx, &input, &revision(&flow)).unwrap();
+            input.insert("count".into(), Value::Null);
+            input.insert("key".into(), json!(""));
+            save(&flow, &ctx, &input, &revision(&flow)).unwrap();
+            let after = view(&flow, &ctx).unwrap();
+            assert!(after["values"].get("count").is_none(), "{format}");
+            assert_eq!(after["configuredSecrets"]["key"], true);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn dotenv_inline_comments_and_repairing_invalid_numeric_values() {
+        let (mut flow, ctx, root) = fixture();
+        flow.files[0].format = "dotenv".into();
+        flow.files[0].path = "demo/.env".into();
+        for binding in &mut flow.files[0].bindings {
+            binding.key = vec![binding.field.to_uppercase()];
+        }
+        let path = target(&flow.files[0], &ctx).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let bytes = b"URL=\"https://example.invalid/v1\" # endpoint\nKEY='secret#part' # key\nCOUNT=invalid # repair\nENABLED=false # flag\nKEEP=value # comment\n";
+        fs::write(&path, bytes).unwrap();
+        let snapshot = files_revision(&[(path.clone(), Some(bytes.to_vec()))]).unwrap();
+        let mut input = values();
+        input.insert("count".into(), json!(5));
+        input.insert("key".into(), json!(""));
+        super::save(&flow, &ctx, &input, &revision(&flow), &snapshot).unwrap();
+        let content = fs::read(&path).unwrap();
+        let doc = parse("dotenv", Some(&content)).unwrap();
+        assert_eq!(doc["KEY"], "secret#part");
+        assert_eq!(view(&flow, &ctx).unwrap()["values"]["count"], 5);
+        assert!(String::from_utf8(content)
+            .unwrap()
+            .contains("KEEP=value # comment"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn required_boolean_without_default_can_save_the_displayed_false_value() {
+        let (mut flow, ctx, root) = fixture();
+        let field = &mut flow.steps[0].fields[3];
+        field.default_value = None;
+        field.required = true;
+        let view = view(&flow, &ctx).unwrap();
+        assert_eq!(view["values"]["enabled"], false);
+        let mut input: Values = serde_json::from_value(view["values"].clone()).unwrap();
+        input.extend(values());
+        save(&flow, &ctx, &input, &revision(&flow)).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 }

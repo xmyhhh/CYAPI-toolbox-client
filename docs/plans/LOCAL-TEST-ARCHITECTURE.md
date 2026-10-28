@@ -1,10 +1,20 @@
 # 工作流本地测试架构与业务链路
 
+## Bridge 本地升级（2026-10-28）
+
+原 EXE 入口 `:18732/workflows/` 已接入统一 Bridge，并与 `:18733` 共用管理与计费核心。专用后台 `http://127.0.0.1:18733/admin/bridge` 支持开通、产品价格、上游、任务和账务核对；四类 ComfyUI CYAPI 节点通过同一 Bridge 调用。现有本地手工测试 Key 已开通，重登可验收。启动及最新测试见 `CYAPI-toolbox/server/bridge/README.md`；下文为此前直接 fixture 链路记录。
+
 日期：2026-10-28。本文区分**已实现、仅原型、未接通**；不是生产部署说明。
+
+### 本地测试 EXE R2
+
+最新程序：`output/local-test-20261028-r2/CYAPI-Toolbox-1.3.0-local.2.exe`，版本 `1.3.0-local.2`。
+仍固定连接 `http://127.0.0.1:18732/workflows/`，沿用 `com.cyapi.toolbox.localtest` 与 `%TEMP%\opencode\cyapi-local-stack-runtime` 测试数据目录。包含独立 Key 管理页的桌面就绪识别和侧栏导航修复。
+从隔离构建快照生成，正式源码的服务地址及版本号保持正式配置。旧 EXE 保留在原目录。
 
 ### 最新更新：多模态 Mock
 
-入口已改为普通工具列表：无需 Key 浏览功能/流程和准备描述。独立 Key 管理页提供保存、默认选择、单 Key 激活/停用、重命名、移除与临时使用；Key 在服务端按浏览器配置空间加密保存。需要 Key 的操作未激活时弹出提示，用户选择是否跳转；激活后保留输入，需自行返回并再次操作。详见 `CYAPI-toolbox/server/workflows/DISCOVERY-AND-KEYS.md`。以下旧版“登录后才能使用”及“全部 Key 只留内存”的描述仅适用于此前实现。
+入口已沿用工具接入的卡片与控件样式：无需 Key 浏览功能/流程和准备描述。独立 Key 管理页提供保存、单 Key 自动激活、多 Key 手动切换、重命名、移除与临时使用，不设置默认 Key；Key 在服务端按浏览器配置空间加密保存。需要 Key 的操作未激活时弹出提示，用户选择是否跳转；激活后保留输入，需自行返回并再次操作。产物页增加尽快下载与超过 30 天不定时清理提示。详见 `CYAPI-toolbox/server/workflows/DISCOVERY-AND-KEYS.md`。以下旧版“登录后才能使用”及“全部 Key 只留内存”的描述仅适用于此前实现。
 
 `:18732` 已从临时服务副本切换为工作区 `CYAPI-toolbox/server/tests/fixtures/workflow-multimodal-stack.mjs`。新增 :18084 私有 Mock 服务，支持视频 MP4、3D OBJ、语音转文字 TXT，以及「转写 → 图片 → 视频 / 网格并行」复合模板。原有图片模板继续走私有 ComfyUI。原 EXE 无需重新构建，重新登录即可。
 

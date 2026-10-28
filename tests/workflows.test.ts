@@ -104,7 +104,7 @@ test('Tools and Workflows are peers and remote view hides rather than reloads', 
 
 test('desktop workflow copy does not claim server mode or share tool credentials', () => {
   const app = read('src/app/App.tsx');
-  assert.match(app, /执行模式与费用以工作流页面显示为准/);
+  assert.match(app, /费用以运行前报价为准/);
   assert.match(app, /工作流使用独立的 CYAPI API Key/);
   assert.match(app, /任务状态待核对时/);
   assert.doesNotMatch(app, /参考图拼贴模拟 · 非 AI 生成 · 不计费/);
@@ -117,6 +117,7 @@ function adapter({ frame = false, origin = 'https://api.cyapi.cyou' } = {}) {
   let active: string | null = 'library',
     modal = false,
     login = false,
+    auxiliary = false,
     busy = false;
   const clicks: string[] = [];
   const dataset: Record<string, string> = {};
@@ -130,6 +131,7 @@ function adapter({ frame = false, origin = 'https://api.cyapi.cyou' } = {}) {
       querySelector(selector: string) {
         if (selector.startsWith('#modal')) return modal || busy ? {} : null;
         if (selector === '#login-form') return login ? {} : null;
+        if (selector === '#key-form, .onboarding, .settings-box') return auxiliary ? {} : null;
         if (selector === '.tabs .active') return active ? { dataset: { action: active } } : null;
         const section = /data-action="(\w+)"/.exec(selector)?.[1];
         if (section)
@@ -167,6 +169,9 @@ function adapter({ frame = false, origin = 'https://api.cyapi.cyou' } = {}) {
     },
     setLogin: (next: boolean) => {
       login = next;
+    },
+    setAuxiliary: (next: boolean) => {
+      auxiliary = next;
     },
     setBusy: (next: boolean) => {
       busy = next;
@@ -219,4 +224,19 @@ test('UI adapter defers navigation until after manual login without touching Key
   ui.setActive('library');
   assert.equal(ui.sync('results').section, 'results');
   assert.deepEqual(ui.clicks, ['results']);
+});
+
+test('Key management remains ready and desktop navigation can leave auxiliary pages', () => {
+  const ui = adapter();
+  ui.sync();
+  ui.setActive(null);
+  ui.setAuxiliary(true);
+  assert.deepEqual(ui.sync(), { ready: true, section: null, locked: false });
+  assert.deepEqual(ui.clicks, [], 'polling does not leave Key management');
+  ui.setModal(true);
+  assert.equal(ui.sync('queue', 'nav-2').locked, true);
+  assert.deepEqual(ui.clicks, []);
+  ui.setModal(false);
+  assert.equal(ui.sync('queue', 'nav-2').section, 'queue');
+  assert.deepEqual(ui.clicks, ['queue']);
 });

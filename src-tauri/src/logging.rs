@@ -63,6 +63,8 @@ pub fn register_secret(secret: &str) {
     if let Ok(mut secrets) = SECRETS.get_or_init(Default::default).lock() {
         if secrets.len() < 256 && !secrets.iter().any(|v| v == secret) {
             secrets.push(secret.into());
+            // Mask longer credentials first so a shared prefix cannot expose a suffix.
+            secrets.sort_by_key(|value| std::cmp::Reverse(value.len()));
         }
     }
 }
@@ -73,7 +75,7 @@ pub fn redact(text: &str) -> String {
         (Regex::new(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+").unwrap(), "Bearer [REDACTED]"),
         (Regex::new(r"(?i)(\bAuthorization\s*[:=]\s*Basic\s+)[A-Za-z0-9+/=]+").unwrap(), "$1[REDACTED]"),
         (Regex::new(r"(?im)(\b(?:Cookie|Set-Cookie)\s*[:=]\s*)[^\r\n]+").unwrap(), "$1[REDACTED]"),
-        (Regex::new(r#"(?i)([\"']?(?:[a-z_]*api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|password|secret|authorization|cookie)[\"']?\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;}&]+)"#).unwrap(), "$1[REDACTED]"),
+        (Regex::new(r#"(?i)([\"']?(?:[a-z_]*api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|password|secret|authorization|cookie)[\"']?\s*[:=]\s*)(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;}&]+)"#).unwrap(), "$1[REDACTED]"),
         (Regex::new(r"\bsk-[A-Za-z0-9_-]{8,}").unwrap(), "[REDACTED]"),
         (Regex::new(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").unwrap(), "[REDACTED]"),
         (Regex::new(r"(?i)(https?://)[^\s/@]+:[^\s/@]+@").unwrap(), "$1[REDACTED]@"),
@@ -110,9 +112,7 @@ pub fn data_path() -> PathBuf {
     std::env::var_os("CYAPI_TOOLBOX_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            let home = std::env::var_os(crate::platform::home_variable())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| std::env::temp_dir());
+            let home = crate::diagnostics::home_path();
             crate::platform::data_root(&home).join("CYAPI-toolbox/data")
         })
 }
@@ -397,5 +397,16 @@ mod tests {
     fn operation_scope_is_restored_after_panic() {
         let _ = std::panic::catch_unwind(|| with_operation("test".into(), || panic!("fixture")));
         assert!(OPERATION.with(|v| v.borrow().is_none()));
+    }
+
+    #[test]
+    fn redacts_escaped_quotes_and_overlapping_registered_credentials() {
+        let output = redact(r#"{"apiKey":"prefix\"private-suffix","message":"keep context"}"#);
+        assert!(!output.contains("prefix"), "{output}");
+        assert!(!output.contains("private-suffix"), "{output}");
+        assert!(output.contains("keep context"));
+        register_secret("overlapping-fixture");
+        register_secret("overlapping-fixture-private-suffix");
+        assert_eq!(redact("overlapping-fixture-private-suffix"), "[REDACTED]");
     }
 }

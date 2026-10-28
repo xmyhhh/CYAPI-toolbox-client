@@ -516,6 +516,10 @@ fn commit(root: &Path, current: &Snapshot, next: &Snapshot) -> Result<()> {
     match next {
         Some(bytes) => {
             let temp = stage(&path, bytes)?;
+            if snapshot(root).as_ref().ok() != Some(current) {
+                let _ = fs::remove_file(&temp);
+                return Err("Claude Code 配置已被其他程序修改，请重新读取".into());
+            }
             fs::rename(&temp, &path).map_err(|_| {
                 let _ = fs::remove_file(&temp);
                 "无法替换 Claude Code 配置文件，请检查是否被占用".into()

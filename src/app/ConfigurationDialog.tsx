@@ -62,6 +62,12 @@ export function ConfigurationDialog({
 
   useEffect(() => {
     let active = true;
+    setBusy(true);
+    setView(undefined);
+    setValues({});
+    setStep(0);
+    setError('');
+    setSaved(false);
     async function load() {
       try {
         let next: ConfigurationView;
@@ -72,12 +78,13 @@ export function ConfigurationDialog({
           next = {
             flow: target.preview,
             flowRevision: '',
+            configurationRevision: '',
             configuredSecrets: {},
             values: Object.fromEntries(
               target.preview.steps
                 .flatMap((s) => s.fields)
-                .filter((f) => f.default !== undefined)
-                .map((f) => [f.id, f.default!]),
+                .filter((f) => f.default !== undefined || f.type === 'boolean')
+                .map((f) => [f.id, f.default !== undefined ? f.default : false]),
             ),
             files: target.preview.files.map((f) => ({
               path: pathExample(f.root, f.path),
@@ -104,7 +111,7 @@ export function ConfigurationDialog({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!view) return;
+    if (!view || busy) return;
     if (step < view.flow.steps.length - 1) {
       setStep(step + 1);
       return;
@@ -116,12 +123,30 @@ export function ConfigurationDialog({
         ...options,
         values,
         flowRevision: view.flowRevision,
+        configurationRevision: view.configurationRevision,
       });
-      // Fetch only masked state after saving; discard the entered secret from form state.
-      const next = await nativeCall<ConfigurationView>('configuration-read', options);
-      setValues(next.values);
-      setView(next);
       setSaved(true);
+      setValues((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(
+            ([id]) =>
+              !view.flow.steps.some((step) =>
+                step.fields.some((field) => field.id === id && field.type === 'secret'),
+              ),
+          ),
+        ),
+      );
+      // Fetch only masked state after saving; discard the entered secret from form state.
+      try {
+        const next = await nativeCall<ConfigurationView>('configuration-read', options);
+        setValues(next.values);
+        setView(next);
+      } catch (e) {
+        setView(undefined);
+        setError(
+          `配置已保存，但重新读取失败，请关闭后重新打开：${e instanceof Error ? e.message : e}`,
+        );
+      }
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
     } finally {

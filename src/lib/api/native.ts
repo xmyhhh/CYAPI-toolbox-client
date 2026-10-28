@@ -28,6 +28,7 @@ export interface ConfigFlow {
 export interface ConfigurationView {
   flow: ConfigFlow;
   flowRevision: string;
+  configurationRevision: string;
   values: Record<string, ConfigValue>;
   configuredSecrets: Record<string, boolean>;
   files: { path: string; format: string; exists: boolean }[];

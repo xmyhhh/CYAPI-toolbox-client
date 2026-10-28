@@ -94,14 +94,16 @@ export function CyapiRoutes({
             className="n-button"
             disabled={disabled || loading || running || !nativeAvailable}
             onClick={() => void testRoutes()}
-            title={!nativeAvailable ? '请在桌面版测速' : undefined}
+            title={
+              !nativeAvailable ? '请在桌面版测延迟' : '不带 API Key 请求 /v1/models，测量响应头延迟'
+            }
           >
             {running ? (
               <LoaderCircle size={14} className="n-spin" aria-hidden="true" />
             ) : (
               <Gauge size={14} aria-hidden="true" />
             )}
-            {running ? '测速中' : '线路测速'}
+            {running ? '测量中' : '测延迟'}
           </button>
         </div>
       </div>
@@ -133,7 +135,7 @@ export function CyapiRoutes({
                   {route.id === view.manifest.defaultRouteId && (
                     <span className="n-pill">默认</span>
                   )}
-                  {fastest && <span className="n-pill n-cyapi-best">连接最快</span>}
+                  {fastest && <span className="n-pill n-cyapi-best">延迟最低</span>}
                   {route.baseUrl.startsWith('http:') && (
                     <span className="n-cyapi-http" title="此线路使用未加密的 HTTP 连接">
                       HTTP
@@ -142,16 +144,19 @@ export function CyapiRoutes({
                 </span>
                 <code>{route.baseUrl}</code>
               </span>
-              <span className={`n-cyapi-latency ${result?.reachable ? 'available' : ''}`}>
+              <span
+                className={`n-cyapi-latency ${result?.reachable ? 'available' : ''}`}
+                title={result?.message}
+              >
                 {testing
-                  ? '正在测速…'
+                  ? '正在测量…'
                   : result
-                    ? result.reachable
-                      ? `${result.latencyMs} ms`
+                    ? result.latencyMs !== null
+                      ? `${result.latencyMs} ms${result.reachable ? '' : ` · ${result.message}`}`
                       : result.message
                     : running
-                      ? '等待测速'
-                      : '未测速'}
+                      ? '等待测量'
+                      : '未测量'}
               </span>
             </label>
           );
@@ -165,7 +170,7 @@ export function CyapiRoutes({
           : running
             ? `已完成 ${completed} / ${view.manifest.routes.length} 条线路`
             : completed
-              ? `测速完成，${successful.length} / ${view.manifest.routes.length} 条可连接（每条 3 次取平均）。请选择要使用的线路。`
+              ? `测量完成，${successful.length} / ${view.manifest.routes.length} 条正常响应（含 401）；每条请求 3 次，取收到响应的平均延迟。`
               : view.message ||
                 (view.source === 'server'
                   ? '线路已更新，本地缓存已替换。'
@@ -176,8 +181,10 @@ export function CyapiRoutes({
       )}
       <SettingHelp>
         <p className="n-config-note">
-          测速不发送 API Key，不调用模型；每条线路发送 3 次不带密钥的请求并取平均延迟。
-          {!nativeAvailable && '请在桌面版测速。'}
+          每条线路向模型列表接口（通常为 /v1/models）发送 3 次不带 API Key 的 GET
+          请求，计时到收到响应头，不下载模型列表。HTTP 401 属于预期的鉴权响应；其他 HTTP
+          状态也显示延迟，但不参与最低延迟推荐。延迟包含连接建立和接口响应，不代表模型生成速度或下载带宽。
+          {!nativeAvailable && '请在桌面版测延迟。'}
           线路优先读取本地缓存，启动时自动更新。
         </p>
       </SettingHelp>
