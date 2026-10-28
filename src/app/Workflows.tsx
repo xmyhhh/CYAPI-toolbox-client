@@ -111,12 +111,13 @@ export function Workflows({
       {(!ready || error) && (
         <section className="wf-offline" role="status">
           {error ? <RefreshCw size={24} /> : <LoaderCircle className="n-spin" size={24} />}
-          <h2>{nativeAvailable ? '正在连接工作流服务…' : '打开工作流服务'}</h2>
-          <p>{error || '使用 CYAPI API Key 登录；不读取工具接入的凭据。'}</p>
+          <h2>{error ? '工作流服务暂不可用' : nativeAvailable ? '正在连接工作流服务…' : '打开工作流服务'}</h2>
+          <p>{error || '无需 Key 即可浏览功能与流程；运行前请在 Key 管理中激活。'}</p>
           <a className="n-button" href={WORKFLOW_URL} target="_blank" rel="noreferrer">
             在浏览器中打开
           </a>
           <p>关闭客户端或画布不会停止服务，已提交的任务继续执行。</p>
+          <p>工作流 Key 与工具接入独立；任务费用和执行模式以工作流页面为准。</p>
         </section>
       )}
     </div>

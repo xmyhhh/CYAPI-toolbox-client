@@ -102,6 +102,15 @@ test('Tools and Workflows are peers and remote view hides rather than reloads', 
   assert.doesNotMatch(app, /researchBuild|预研|RESEARCH|本机模拟/);
 });
 
+test('desktop workflow copy does not claim server mode or share tool credentials', () => {
+  const app = read('src/app/App.tsx');
+  assert.match(app, /执行模式与费用以工作流页面显示为准/);
+  assert.match(app, /工作流使用独立的 CYAPI API Key/);
+  assert.match(app, /任务状态待核对时/);
+  assert.doesNotMatch(app, /参考图拼贴模拟 · 非 AI 生成 · 不计费/);
+  assert.match(read('src/app/Workflows.tsx'), /工作流 Key 与工具接入独立/);
+});
+
 // Execute the actual native-injected adapter against a tiny fake DOM. No remote
 // site, production key, paid call, engine, browser or credential fixture needed.
 function adapter({ frame = false, origin = 'https://api.cyapi.cyou' } = {}) {

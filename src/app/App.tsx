@@ -854,7 +854,7 @@ export default function App() {
           </h1>
           {page === 'workflows' && (
             <div className="n-heading-actions">
-              <span className="n-workflow-mode">参考图拼贴模拟 · 非 AI 生成 · 不计费</span>
+              <span className="n-workflow-mode">执行模式与费用以工作流页面显示为准</span>
               <button
                 className="n-button"
                 title={WORKFLOW_URL}
@@ -1577,8 +1577,10 @@ export default function App() {
                 在队列和结果中查看、下载。无需安装或配置 Agent。
               </p>
               <p>
-                使用 CYAPI API Key 登录已部署的工作流服务。当前为参考图拼贴模拟，非 AI
-                生成、不计费。切换到工具接入不会停止上传或已提交任务；关闭客户端前请确认草稿保存，画布修改需显式保存。
+                工作流使用独立的 CYAPI API Key，不读取或改变工具接入中的 Key。请先查看工作流页面的执行模式与费用，再确认启动；页面标为模拟时不是真实生图，也不产生真实费用。
+              </p>
+              <p>
+                切换到工具接入不会停止上传或已提交任务；关闭客户端前请确认草稿保存，画布修改需显式保存。任务状态待核对时，请先查看队列和结果，不要重复启动。
               </p>
               <h3>工具接入</h3>
               <p>
