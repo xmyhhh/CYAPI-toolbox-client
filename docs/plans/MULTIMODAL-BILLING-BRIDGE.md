@@ -1,8 +1,10 @@
 # CYAPI 多模态售卖方案：ComfyUI + 上游 API 转卖 + 统一计费（v1 草案）
 
-> 状态：设计稿（未实施）
+> 状态：设计稿（未实施；部分假设已被现行实现取代）
 > 前提：sub2api 在售语言模型 API；Bridge 部署在 ComfyUI 同机或同内网；产物存储用 S3/R2（与 sub2api 异步图像任务共用一套）。
 > 目标：图像 / 视频 / 语音 / 3D / ComfyUI 任意 workflow，一把 key，统一余额、统一账单、统一缓存。
+>
+> 现行实现（2026-10-28）：Bridge 不维护价目、不做本地钱包，也不直连计费库。任务成功后才按计费单位调用 sub2api 网关的 `per_request` 模型扣款（假模型调用），价格只存在于 sub2api；失败或取消不扣费。下文“价目表长在 Bridge 配置里”“Bridge 自己记账”等描述已被此方案取代，仅作设计历史保留。详见 `CYAPI-toolbox/server/bridge/README.md`。
 
 ---
 

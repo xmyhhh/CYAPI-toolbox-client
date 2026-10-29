@@ -34,7 +34,13 @@ const RUNTIME_SIZE_LIMIT: u64 = 200_000_000;
 const MAX_FILES: usize = 512;
 /// Must stay in sync with `limits.decodedBytes` in `server/skill-catalog.mjs`.
 const MAX_DECODED: usize = 40_000_000;
-pub(crate) const SERVER_URL: &str = "https://api.cyapi.cyou";
+/// Built-in service origin. Production builds keep the official host; a local
+/// test build may override it at compile time without patching this file:
+/// `CYAPI_SERVER_URL=http://127.0.0.1:18733 npm run desktop:exe`.
+pub(crate) const SERVER_URL: &str = match option_env!("CYAPI_SERVER_URL") {
+    Some(url) => url,
+    None => "https://api.cyapi.cyou",
+};
 const SERVER_HOST: &str = "api.cyapi.cyou";
 /// The download host of release files; it shares the origin with the API host.
 const DOWNLOAD_HOST: &str = "tool.cyapi.cyou";
@@ -633,14 +639,6 @@ pub struct Service {
     message: Option<String>,
 }
 impl Service {
-    /// Workflow pages use the same built-in production service as the toolbox.
-    /// Development overrides for catalog fixtures never receive login credentials.
-    pub(crate) fn workflow_url() -> tauri::Url {
-        format!("{SERVER_URL}/workflows/")
-            .parse()
-            .expect("built-in service URL")
-    }
-
     fn require_installable(skill: &Skill) -> Result<()> {
         if skill.distribution != "bundled" {
             return Err(skill

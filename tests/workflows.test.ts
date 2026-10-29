@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import vm from 'node:vm';
 import test from 'node:test';
 import {
   isCreationSection,
@@ -10,19 +9,15 @@ import {
 } from '../src/lib/workbenches.ts';
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+const exists = (path: string) => existsSync(new URL(`../${path}`, import.meta.url));
 
-test('workflows are in standard builds with the existing Service and no research switch', () => {
+test('workflows ship in standard builds with no research switch', () => {
   const pkg = JSON.parse(read('package.json'));
   assert.ok(pkg.scripts['desktop:exe']);
   assert.doesNotMatch(JSON.stringify(pkg.scripts), /research|workflow:service/);
   assert.doesNotMatch(read('src-tauri/Cargo.toml'), /research-workflows/);
   assert.doesNotMatch(read('src-tauri/src/lib.rs'), /research-workflows|configure_environment/);
-  assert.match(read('src-tauri/src/lib.rs'), /mod workflows;/);
-  assert.match(read('src-tauri/src/service.rs'), /fn workflow_url\(\)[\s\S]*?SERVER_URL/);
-  assert.equal(
-    existsSync(new URL('../src-tauri/tauri.research.conf.json', import.meta.url)),
-    false,
-  );
+  assert.equal(exists('src-tauri/tauri.research.conf.json'), false);
 });
 
 test('research directory contains only archived Markdown documents', () => {
@@ -34,40 +29,140 @@ test('research directory contains only archived Markdown documents', () => {
   assert.ok(files.some((entry) => entry.name === 'README.md'));
 });
 
-test('child view has no local capabilities and every app command rejects remote callers', () => {
+test('the user workbench is a native React page; no remote UI and no child WebView', () => {
+  const page = read('src/app/Workflows.tsx');
+  assert.match(page, /import \{ Workbench \} from '\.\.\/features\/workflows\/Workbench'/);
+  assert.match(page, /<Workbench\b/);
+  for (const pattern of [/<iframe/, /postMessage/, /syncWorkflowView/, /invoke\(/, /WORKFLOW_URL/])
+    assert.doesNotMatch(page, pattern);
+
+  // The old remote UI and its native child WebView are gone.
+  assert.equal(exists('src-tauri/src/workflows.rs'), false);
+  assert.equal(exists('src-tauri/src/workflows-ui.js'), false);
+  assert.equal(exists('src/lib/api/workflows.ts'), false);
+
+  const backend = read('src-tauri/src/lib.rs');
+  assert.doesNotMatch(backend, /mod workflows;|workflows::/);
+  assert.match(backend, /fn trusted_caller\(view: &tauri::Webview\)/);
+  assert.match(backend, /view\.label\(\) == "main"/);
+  assert.match(backend, /local_app_url\(&url\)/);
+  assert.match(backend, /invoke\.resolver\.reject/);
+
   const capability = JSON.parse(read('src-tauri/capabilities/default.json'));
   assert.deepEqual(capability.webviews, ['main']);
   assert.equal(capability.windows, undefined);
   assert.equal(capability.remote, undefined);
-  const backend = read('src-tauri/src/lib.rs');
-  assert.match(backend, /trusted_caller\(invoke\.message\.webview_ref\(\)\)/);
-  assert.match(backend, /invoke\.resolver\.reject/);
-  const workflows = read('src-tauri/src/workflows.rs');
-  assert.match(workflows, /view\.label\(\) == "main"/);
-  assert.match(workflows, /view\.url\(\)\.is_ok_and/);
-  assert.match(workflows, /NewWindowResponse::Deny/);
-  assert.match(workflows, /PermissionResponse::Deny/);
-  assert.doesNotMatch(
-    workflows,
-    /Command::new|ChildStdin|\.shutdown\(|CYAPI_WORKFLOW_SERVICE_URL|apiKey|authToken/,
-  );
+
+  // No `/workflows/` page path is left anywhere in the client.
+  for (const file of ['src/app/Workflows.tsx', 'src/features/workflows/api.ts'])
+    assert.doesNotMatch(read(file), /['"`]\/workflows\//);
 });
 
-test('remote service is first-party WebView, not iframe or a local engine probe', () => {
-  const config = JSON.parse(read('src-tauri/tauri.conf.json'));
-  assert.match(config.app.security.csp, /frame-src 'none'/);
-  assert.doesNotMatch(config.app.security.csp, /api\.cyapi|127\.0\.0\.1:8188|\*/);
-  const backend = read('src-tauri/src/workflows.rs');
-  assert.match(backend, /window\s*\.add_child/);
-  assert.match(backend, /WebviewUrl::External\(crate::service::Service::workflow_url\(\)\)/);
-  assert.match(backend, /\.on_navigation\(allowed_navigation\)/);
-  assert.match(backend, /\.on_download/);
-  assert.match(backend, /allowed_download\(&url\)/);
-  assert.doesNotMatch(
-    read('src/app/Workflows.tsx'),
-    /<iframe|postMessage|serviceOrigin|readWorkflows|enginePid/,
+test('the ComfyUI canvas is the only server-served page and it is sandboxed', () => {
+  const canvas = read('src/features/workflows/CanvasDialog.tsx');
+  assert.match(canvas, /<iframe/);
+  assert.match(canvas, /src=\{url\}/);
+  assert.match(canvas, /sandbox="allow-scripts allow-same-origin allow-downloads"/);
+  assert.match(canvas, /canvasSession\(apiKey, kind, id\)/);
+  assert.match(canvas, /WORKFLOW_ORIGIN/);
+
+  const api = read('src/features/workflows/api.ts');
+  const url = api.slice(api.indexOf('export function canvasUrl'), api.indexOf('export async function fetchMedia'));
+  assert.match(url, /\/api\/workflows\/canvas\//);
+  assert.match(url, /ct: token/);
+  assert.match(url, /po: window\.location\.origin/);
+  // The API Key never reaches the iframe URL.
+  assert.doesNotMatch(url, /Bearer|apiKey|key:/);
+});
+
+test('workflow requests authenticate with a Bearer header and never use cookies or CSRF', () => {
+  const api = read('src/features/workflows/api.ts');
+  assert.match(api, /export const WORKFLOW_API = `\$\{SERVER\}\/api\/workflows`/);
+  assert.match(api, /Authorization: `Bearer \$\{key\}`/);
+  assert.doesNotMatch(api, /credentials:\s*['"]include/);
+  assert.doesNotMatch(api, /csrf|X-CSRF|withCredentials/i);
+  assert.doesNotMatch(api, /\/api\/workflows\/(ui|keyring)\b/);
+});
+
+test('workflow Keys live in the client and never in the service keyring', () => {
+  const store = read('src/features/workflows/keyStore.ts');
+  assert.match(store, /cyapi\.workflows\.keys\.v1/);
+  assert.match(store, /localStorage\.setItem/);
+  assert.match(store, /localStorage\.getItem/);
+  assert.doesNotMatch(store, /\/api\//);
+  assert.doesNotMatch(store, /document\.cookie/);
+
+  const keys = read('src/features/workflows/KeysDialog.tsx');
+  assert.match(keys, /保存到本机/);
+  assert.match(keys, /localStorage/);
+});
+
+test('local Key store de-duplicates, filters temporary Keys and caps the list', async () => {
+  const data = new Map<string, string>();
+  (globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: (name: string) => data.get(name) ?? null,
+    setItem: (name: string, value: string) => void data.set(name, value),
+    removeItem: (name: string) => void data.delete(name),
+  };
+  const { addKey, loadKeys, saveKeys, maskKey } = await import(
+    '../src/features/workflows/keyStore.ts'
   );
-  assert.match(read('src/lib/api/workflows.ts'), /https:\/\/api\.cyapi\.cyou\/workflows\//);
+
+  assert.deepEqual(loadKeys(), { keys: [], activeId: null });
+
+  const first = addKey([], ' 日常 ', ' sk-abcdef123456 ');
+  assert.equal(first.name, '日常');
+  assert.equal(first.key, 'sk-abcdef123456');
+  assert.equal(maskKey(first.key), '•••• 3456');
+  assert.equal(addKey([first], '重复', first.key), first, 'the same Key is not stored twice');
+
+  saveKeys([first, { ...first, id: 'tmp', temporary: true }], first.id);
+  const stored = loadKeys();
+  assert.deepEqual(stored.keys.map((entry) => entry.id), [first.id]);
+  assert.equal(stored.activeId, first.id);
+  assert.deepEqual(loadKeys().keys[0].name, '日常');
+
+  const many = Array.from({ length: 10 }, (_, index) => ({
+    id: String(index),
+    name: `Key ${index}`,
+    key: `sk-${index}`,
+    createdAt: index,
+  }));
+  assert.throws(() => addKey(many, 'extra', 'sk-extra'), /最多保存 10 个 Key/);
+  assert.throws(() => addKey([], 'empty', '   '), /请输入 API Key/);
+
+  delete (globalThis as { localStorage?: unknown }).localStorage;
+});
+
+test('desktop CSP allows the canvas origin and blob media, and nothing broader', () => {
+  const csp = JSON.parse(read('src-tauri/tauri.conf.json')).app.security.csp as string;
+  const directive = (name: string) => csp.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${name} `)) || '';
+  const frame = directive('frame-src');
+  const connect = directive('connect-src');
+  const img = directive('img-src');
+  const media = directive('media-src');
+  for (const origin of ['https://api.cyapi.cyou', 'http://127.0.0.1:18733']) {
+    assert.ok(frame.includes(origin), `frame-src must allow ${origin}`);
+    assert.ok(connect.includes(origin), `connect-src must allow ${origin}`);
+  }
+  assert.ok(img.includes('blob:'));
+  assert.ok(media.includes('blob:'));
+  assert.doesNotMatch(frame, /frame-src 'none'/);
+  assert.doesNotMatch(frame, /\s\*\s*;|frame-src \*/);
+  assert.doesNotMatch(csp, /unsafe-eval/);
+});
+
+test('media is fetched with the Bearer Key and shown through blob URLs', () => {
+  const media = read('src/features/workflows/Media.tsx');
+  assert.match(media, /fetchMedia\(/);
+  assert.match(media, /URL\.createObjectURL/);
+  assert.match(media, /URL\.revokeObjectURL/);
+  assert.doesNotMatch(media, /[?&]mt=/);
+
+  const api = read('src/features/workflows/api.ts');
+  assert.match(api, /export async function fetchMedia/);
+  assert.match(api, /export async function downloadArtifact/);
+  assert.doesNotMatch(api, /\/download-token|mediaToken|\bmt=/);
 });
 
 test('business workbenches remember independent pages with no research storage namespace', () => {
@@ -91,7 +186,7 @@ test('business workbenches remember independent pages with no research storage n
   assert.equal(WORKBENCH_KEY, 'cyapi.workbenches.v1');
 });
 
-test('Tools and Workflows are peers and remote view hides rather than reloads', () => {
+test('Tools and Workflows are peers and the workbench keeps the App sidebar contract', () => {
   const app = read('src/app/App.tsx');
   const tools = app.indexOf("['tools', SquareTerminal, '工具接入'");
   const workflows = app.indexOf("['create', Workflow, '工作流'");
@@ -99,144 +194,23 @@ test('Tools and Workflows are peers and remote view hides rather than reloads', 
   assert.match(app, /hidden=\{page !== 'workflows'\}/);
   assert.match(app, /visible=\{page === 'workflows' && !modalOpen && !logsOpen\}/);
   assert.match(app, /workbench !== 'tools' \|\| toolsLoaded\.current/);
-  assert.doesNotMatch(app, /researchBuild|预研|RESEARCH|本机模拟/);
+  assert.doesNotMatch(app, /researchBuild|预研|RESEARCH/);
+
+  const workbench = read('src/features/workflows/Workbench.tsx');
+  for (const prop of ['onSectionChange', 'onLockedChange', 'initialSection', 'navigation'])
+    assert.match(workbench, new RegExp(`${prop}`));
+  assert.match(workbench, /changeSection\('queue'\)/);
+  assert.doesNotMatch(workbench, /<iframe/);
 });
 
-test('desktop workflow copy does not claim server mode or share tool credentials', () => {
+test('desktop workflow copy never claims server mode or shares tool credentials', () => {
   const app = read('src/app/App.tsx');
   assert.match(app, /费用以运行前报价为准/);
   assert.match(app, /工作流使用独立的 CYAPI API Key/);
   assert.match(app, /任务状态待核对时/);
   assert.doesNotMatch(app, /参考图拼贴模拟 · 非 AI 生成 · 不计费/);
-  assert.match(read('src/app/Workflows.tsx'), /工作流 Key 与工具接入独立/);
-});
 
-// Execute the actual native-injected adapter against a tiny fake DOM. No remote
-// site, production key, paid call, engine, browser or credential fixture needed.
-function adapter({ frame = false, origin = 'https://api.cyapi.cyou' } = {}) {
-  let active: string | null = 'library',
-    modal = false,
-    login = false,
-    auxiliary = false,
-    busy = false;
-  const clicks: string[] = [];
-  const dataset: Record<string, string> = {};
-  const window: Record<string, unknown> = {};
-  window.top = frame ? {} : window;
-  const context = vm.createContext({
-    window,
-    location: { origin, pathname: '/workflows/' },
-    document: {
-      documentElement: { dataset },
-      querySelector(selector: string) {
-        if (selector.startsWith('#modal')) return modal || busy ? {} : null;
-        if (selector === '#login-form') return login ? {} : null;
-        if (selector === '#key-form, .onboarding, .settings-box') return auxiliary ? {} : null;
-        if (selector === '.tabs .active') return active ? { dataset: { action: active } } : null;
-        const section = /data-action="(\w+)"/.exec(selector)?.[1];
-        if (section)
-          return {
-            click() {
-              clicks.push(section);
-              active = section;
-            },
-          };
-        return null;
-      },
-    },
-  });
-  vm.runInContext(read('src-tauri/src/workflows-ui.js'), context);
-  const sync = (section = 'library', navigationId = 'nav-1', theme = 'light') =>
-    JSON.parse(
-      JSON.stringify(
-        (window.__cyapiWorkflowUi as { sync: (value: unknown) => unknown })?.sync({
-          section,
-          navigationId,
-          theme,
-        }),
-      ),
-    );
-  return {
-    window,
-    sync,
-    clicks,
-    dataset,
-    setActive: (next: string | null) => {
-      active = next;
-    },
-    setModal: (next: boolean) => {
-      modal = next;
-    },
-    setLogin: (next: boolean) => {
-      login = next;
-    },
-    setAuxiliary: (next: boolean) => {
-      auxiliary = next;
-    },
-    setBusy: (next: boolean) => {
-      busy = next;
-    },
-  };
-}
-
-test('UI adapter accepts only fixed section and theme; never exposes native bridge or reads secrets', () => {
-  const code = read('src-tauri/src/workflows-ui.js');
-  assert.doesNotMatch(
-    code,
-    /__TAURI|invoke\(|fetch\(|\.cookie|localStorage|api-key|\.value|message\.(action|command|url)/,
-  );
-  for (const options of [{ frame: true }, { origin: 'https://example.com' }])
-    assert.equal(adapter(options).window.__cyapiWorkflowUi, undefined);
-  const ui = adapter();
-  assert.equal(ui.sync('editor').ready, false);
-  assert.equal(ui.sync('library', 'nav-1', 'invalid').ready, false);
-  assert.deepEqual(ui.clicks, []);
-});
-
-test('UI adapter navigates via service action, honours locks, never replays requests', () => {
-  const ui = adapter();
-  assert.deepEqual(ui.sync(), { ready: true, section: 'library', locked: false });
-  ui.sync('drafts', 'nav-2', 'dark');
-  assert.deepEqual(ui.clicks, ['drafts']);
-  assert.equal(ui.dataset.theme, 'dark');
-  ui.setActive('queue'); // navigation inside remote app must win over old request
-  ui.sync('drafts', 'nav-2');
-  assert.deepEqual(ui.clicks, ['drafts']);
-  ui.setModal(true);
-  assert.equal(ui.sync('results', 'nav-3').locked, true);
-  assert.deepEqual(ui.clicks, ['drafts']);
-  ui.setModal(false);
-  ui.setBusy(true);
-  ui.sync('results', 'nav-3');
-  assert.deepEqual(ui.clicks, ['drafts']);
-  ui.setBusy(false);
-  assert.equal(ui.sync('results', 'nav-3').section, 'results');
-  assert.deepEqual(ui.clicks, ['drafts', 'results']);
-});
-
-test('UI adapter defers navigation until after manual login without touching Key field', () => {
-  const ui = adapter();
-  ui.setActive(null);
-  ui.setLogin(true);
-  assert.deepEqual(ui.sync('results'), { ready: true, section: null, locked: false });
-  assert.deepEqual(ui.clicks, []);
-  ui.setLogin(false);
-  ui.setActive('library');
-  assert.equal(ui.sync('results').section, 'results');
-  assert.deepEqual(ui.clicks, ['results']);
-});
-
-test('Key management remains ready and desktop navigation can leave auxiliary pages', () => {
-  const ui = adapter();
-  ui.sync();
-  ui.setActive(null);
-  ui.setAuxiliary(true);
-  assert.deepEqual(ui.sync(), { ready: true, section: null, locked: false });
-  assert.deepEqual(ui.clicks, [], 'polling does not leave Key management');
-  ui.setModal(true);
-  assert.equal(ui.sync('queue', 'nav-2').locked, true);
-  assert.deepEqual(ui.clicks, []);
-  ui.setModal(false);
-  assert.equal(ui.sync('queue', 'nav-2').section, 'queue');
-  assert.deepEqual(ui.clicks, ['queue']);
+  const guide = read('src/features/workflows/Dialogs.tsx');
+  assert.match(guide, /Key 只保存在本机客户端/);
+  assert.match(guide, /画布是唯一从服务端加载的界面/);
 });

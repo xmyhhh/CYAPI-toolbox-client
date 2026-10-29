@@ -2,7 +2,7 @@
 
 日期：2026-10-28。以下为第 0 阶段核对与原始实施计划，未验证线上 sub2api 版本与真实计费。
 
-最新本地进度：隔离 Docker 环境、工作流与计费 fixture 已接通，多模态 Mock 支持逐组件消费明细；套件四条合计 0.07 USD，重复结算防重、失败/取消释放和历史明细转换已验证。访客发现页和独立多 Key 管理也已接入。最新状态见 [本地测试架构](LOCAL-TEST-ARCHITECTURE.md) 和 `CYAPI-toolbox/server/workflows/LOCAL-MULTIMODAL.md`；下文“尚未启动/尚未接通”等描述保留为早期核对记录。
+最新本地进度：工作流经 Bridge 走 sub2api 网关的 `per_request` 扣费（假模型调用），不需要修改 sub2api 源码，也不直连计费数据库；任务成功才扣费，失败/取消不扣费。原来的 `:18083` 计费 fixture、冻结表和逐组件明细已撤回。访客发现页和独立多 Key 管理也已接入。最新状态见 [本地测试架构](LOCAL-TEST-ARCHITECTURE.md) 和 `CYAPI-toolbox/server/bridge/README.md`；下文“尚未启动/尚未接通”等描述保留为早期核对记录。
 
 ## 1. 范围
 

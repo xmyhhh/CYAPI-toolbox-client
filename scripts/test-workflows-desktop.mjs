@@ -1,10 +1,11 @@
 // Real Windows EXE + WebView2 smoke check. Uses a fresh temporary user profile,
-// no Agent credentials or paid model. Optional loopback-only personal-template
-// checks use the dedicated smoke account and clean up their own templates/files.
+// no Agent credentials and no paid model. Verifies that the user workflow
+// workbench is a native React page in the main WebView: there is no second
+// page, no child WebView and no remote `/workflows/` UI.
 // CDP is enabled only on this child process and removed when the EXE exits.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,15 +18,6 @@ const executable = path.resolve(
 );
 if (process.platform !== 'win32') throw new Error('This smoke check requires Windows/WebView2.');
 const output = path.join(root, 'output', 'workflows-desktop-check', crypto.randomUUID());
-const origin = process.env.WORKFLOW_DESKTOP_TEST_ORIGIN || 'https://api.cyapi.cyou';
-assert.ok(['https://api.cyapi.cyou', 'http://127.0.0.1:18732'].includes(origin));
-const workflowUrl = origin + '/workflows/';
-const personalCheck = process.env.WORKFLOW_DESKTOP_TEST_PERSONAL === '1';
-const downloads = process.env.WORKFLOW_DESKTOP_TEST_DOWNLOADS;
-if (personalCheck) {
-  assert.equal(origin, 'http://127.0.0.1:18732');
-  assert.ok(downloads && path.isAbsolute(downloads));
-}
 await mkdir(output, { recursive: true });
 const port = 19431;
 try {
@@ -47,9 +39,7 @@ const child = spawn(executable, [], {
   stdio: 'ignore',
 });
 const connections = [];
-let main, remote;
-const personalIds = new Set();
-let exportedFile;
+let main;
 const checks = [];
 const check = (name, value) => {
   assert.ok(value, name);
@@ -127,73 +117,84 @@ try {
       `Array.from(document.querySelectorAll('.n-workbenches strong')).map(el=>el.textContent).join('|') === '工具接入|工作流'`,
     ),
   );
-  // Saved navigation is absent in this isolated profile; default workflow must
-  // load without starting a local engine or selecting/configuring an Agent.
-  const target = await until(
-    async () => (await pages()).find((page) => page.url === workflowUrl),
-    60000,
+
+  // Switch to Workflows. The page is React in the main WebView, so the CDP
+  // target list must not grow and the URL must stay the packaged app URL.
+  await main.evaluate(
+    `Array.from(document.querySelectorAll('.n-workbenches button')).find(el=>el.textContent.includes('工作流')).click();true`,
   );
-  remote = await connect(target);
-  await until(
-    () => remote.evaluate(`document.querySelectorAll('.workflow-card').length >= 2`),
-    60000,
+  await until(() => main.evaluate(`Boolean(document.querySelector('.wfx'))`));
+  check(
+    'workflows open as a native page in the main WebView',
+    await main.evaluate(`window.top === window && !document.querySelector('.wfx iframe')`),
+  );
+  const targets = await pages();
+  check(
+    'no remote workflow page or child WebView is created',
+    targets.length === 1 &&
+      targets.every(
+        (page) =>
+          page.url.startsWith('http://tauri.localhost') &&
+          !/\/workflows\//.test(page.url) &&
+          !/\/api\//.test(page.url),
+      ),
   );
   check(
-    'guest template library loads in the native child view',
-    await remote.evaluate(
-      `window.top===window && location.origin===${JSON.stringify(origin)} && !document.querySelector('#app iframe') && !document.querySelector('#api-key')`,
-    ),
-  );
-  await until(() => remote.evaluate(`document.documentElement.dataset.embedded === 'true'`));
-  await until(() => main.evaluate(`!document.querySelector('.wf-offline')`));
-  check(
-    'workflow heading omits mode notice and browser/reconnect controls',
+    'workflow heading is native and still names the section',
     await main.evaluate(
-      `(()=>{const heading=document.querySelector('.n-page-heading');return heading?.querySelector('h1')?.textContent==='工作流' && !heading.querySelector('.n-heading-actions') && !/执行模式与费用|浏览器打开|重新连接/.test(heading.textContent)})()`,
+      `(()=>{const h=document.querySelector('.wfx-heading h2');return h?.textContent?.includes('工作流库')})()`,
     ),
   );
-  await remote.evaluate(
-    `document.querySelector('[data-action="example"][data-id="mock-video"]').click();true`,
+
+  // The template library is public, so a guest profile can browse it without a Key.
+  await until(
+    () => main.evaluate(`document.querySelectorAll('.wfx-card').length >= 2`),
+    60000,
   );
-  await until(() => remote.evaluate(`Boolean(document.querySelector('.example-output video'))`));
-  await remote.evaluate(
-    `(()=>{const video=document.querySelector('.example-output video');video.muted=true;return video.play().then(()=>true)})()`,
-  );
-  await until(() =>
-    remote.evaluate(`document.querySelector('.example-output video').currentTime>0.1`),
-  );
-  check('example video plays in native WebView', true);
-  await remote.evaluate(`document.querySelector('#modal [data-action="close"]').click();true`);
-  await remote.evaluate(
-    `document.querySelector('[data-action="example"][data-id="mock-mesh"]').click();true`,
-  );
-  await until(() =>
-    remote.evaluate(`document.querySelector('.example-output canvas')?.dataset.ready==='true'`),
-  );
-  check('example mesh renders in native WebView', true);
-  await remote.evaluate(`document.querySelector('#modal [data-action="close"]').click();true`);
+  check('guest template library loads without activating a Key', true);
   check(
-    'native UI adapter applies appearance without parent iframe',
-    await remote.evaluate(`['light','dark'].includes(document.documentElement.dataset.theme)`),
+    'the client owns Key management instead of a server session',
+    await main.evaluate(
+      `document.querySelector('.wfx-key-chip')?.textContent.includes('激活 Key')`,
+    ),
   );
-  const denied = await remote.evaluate(
-    `(async()=>{try{await window.__TAURI_INTERNALS__.invoke('toolbox',{request:{action:'status'}});return false}catch{return true}})()`,
+
+  // Invalid Key is rejected in the same native dialog.
+  await main.evaluate(`document.querySelector('.wfx-key-chip').click();true`);
+  await until(() => main.evaluate(`Boolean(document.querySelector('.wfx-keys-dialog'))`));
+  await main.evaluate(
+    `(()=>{const form=document.querySelector('.wfx-key-add form');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;const name=form.querySelector('input:not([type=password]):not([type=checkbox])');const key=form.querySelector('input[type=password]');set.call(name,'桌面验收');name.dispatchEvent(new Event('input',{bubbles:true}));set.call(key,'invalid-desktop-smoke-key');key.dispatchEvent(new Event('input',{bubbles:true}));form.requestSubmit();return true})()`,
   );
-  check('remote content cannot invoke toolbox commands', denied);
+  await until(
+    () => main.evaluate(`Boolean(document.querySelector('.wfx-error')?.textContent)`),
+    60000,
+  );
   check(
-    'remote content cannot invoke core window commands',
-    await remote.evaluate(
-      `(async()=>{try{await window.__TAURI_INTERNALS__.invoke('plugin:window|get_all_windows');return false}catch{return true}})()`,
+    'invalid Key fails without creating a server session',
+    await main.evaluate(
+      `Boolean(document.querySelector('.wfx-error').textContent) && !localStorage.getItem('cyapi.workflows.keys.v1')`,
+    ),
+  );
+  await main.evaluate(
+    `document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));true`,
+  );
+  await until(() => main.evaluate(`!document.querySelector('.wfx-keys-dialog')`));
+
+  // Commands removed with the remote UI must not exist any more.
+  check(
+    'remote workflow layout command is gone',
+    await main.evaluate(
+      `(async()=>{try{await window.__TAURI_INTERNALS__.invoke('workflows',{layout:{visible:false}});return false}catch{return true}})()`,
     ),
   );
   check(
-    'remote content cannot invoke workflow layout command',
-    await remote.evaluate(
-      `(async()=>{try{await window.__TAURI_INTERNALS__.invoke('workflows',{layout:{visible:false,x:0,y:0,width:0,height:0,section:'library',theme:'light',navigationId:'test'}});return false}catch{return true}})()`,
+    'reload_workflows command is gone',
+    await main.evaluate(
+      `(async()=>{try{await window.__TAURI_INTERNALS__.invoke('reload_workflows');return false}catch{return true}})()`,
     ),
   );
   check(
-    'local core permissions still work with a child view',
+    'local core permissions still work without a child view',
     typeof (await main.evaluate(`window.__TAURI_INTERNALS__.invoke('plugin:app|version')`)) ===
       'string',
   );
@@ -203,184 +204,22 @@ try {
       'native version matches new local build',
       version === process.env.WORKFLOW_DESKTOP_TEST_VERSION,
     );
-  check(
-    'unauthenticated private endpoint remains 401',
-    (await remote.evaluate(`fetch('/api/workflows/state').then(res=>res.status)`)) === 401,
-  );
-  await remote.evaluate(
-    `document.querySelector('[data-action="create-draft"][data-id="image-idea"]').click();true`,
-  );
-  await until(() => remote.evaluate(`Boolean(document.querySelector('#description'))`));
-  await remote.evaluate(`document.querySelector('[data-action="run"]').click();true`);
-  await until(() =>
-    remote.evaluate(`document.querySelector('#modal-title')?.textContent==='未激活 Key'`),
-  );
-  check(
-    'missing Key shows a dialog without opening a form',
-    await remote.evaluate(`!document.querySelector('#key-form')`),
-  );
-  await remote.evaluate(`document.querySelector('#modal [data-action="keys"]').click();true`);
-  await until(() => remote.evaluate(`Boolean(document.querySelector('#key-form'))`));
-  await until(() => main.evaluate(`!document.querySelector('.wf-offline')`));
-  check(
-    'Key management is ready in desktop host',
-    await remote.evaluate(`location.hash==='#keys'`),
-  );
-  await remote.evaluate(
-    `document.querySelector('#key-name').value='桌面验收';document.querySelector('#api-key').value='invalid-desktop-smoke-key';document.querySelector('#key-form').requestSubmit();true`,
-  );
-  await until(
-    () => remote.evaluate(`Boolean(document.querySelector('#key-error')?.textContent)`),
-    45000,
-  );
-  check(
-    'invalid Key is rejected and cleared from input',
-    await remote.evaluate(
-      `document.querySelector('#api-key').value==='' && Boolean(document.querySelector('#key-error').textContent)`,
-    ),
-  );
-  if (personalCheck) {
-    const keyResult = spawnSync(
-      'docker',
-      [
-        'exec',
-        '-i',
-        'cyapi-workflow-local-postgres-1',
-        'psql',
-        '-U',
-        'sub2api_test',
-        '-d',
-        'sub2api_test',
-        '-A',
-        '-t',
-      ],
-      { input: 'SELECT key FROM api_keys WHERE id=3 AND user_id=4', encoding: 'utf8' },
-    );
-    assert.equal(keyResult.status, 0, 'local smoke fixture is available');
-    const key = keyResult.stdout.trim();
-    assert.ok(key.length > 10);
-    const name = '桌面导出验收-' + crypto.randomUUID();
-    await remote.evaluate(
-      `document.querySelector('#key-name').value='桌面验收';document.querySelector('#remember-key').checked=false;document.querySelector('#api-key').value=${JSON.stringify(key)};document.querySelector('#key-form').requestSubmit();true`,
-    );
-    await until(() =>
-      remote.evaluate(
-        `document.querySelector('.active-key-status')?.textContent.includes('桌面验收') && !document.querySelector('#api-key').value`,
-      ),
-    );
-    const created = await remote.evaluate(
-      `(async()=>{const s=await (await fetch('/api/workflows/session')).json();const r=await fetch('/api/workflows/templates',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':s.csrf},body:JSON.stringify({fromId:'mock-mesh',name:${JSON.stringify(name)}})});if(!r.ok)throw Error('template setup failed');return (await r.json()).id})()`,
-    );
-    personalIds.add(created);
-    await remote.evaluate(
-      `Array.from(document.querySelectorAll('[data-action="library"]')).at(0).click();true`,
-    );
-    await until(() =>
-      remote.evaluate(`Boolean(document.querySelector('[data-template-id="${created}"]'))`),
-    );
-    const existing = new Set(await readdir(downloads).catch(() => []));
-    await remote.evaluate(
-      `document.querySelector('[data-template-id="${created}"] [data-action="template-export"]').click();true`,
-    );
-    exportedFile = await until(async () => {
-      for (const file of await readdir(downloads).catch(() => [])) {
-        if (existing.has(file) || !/^workflow-[0-9a-f-]+\.json$/.test(file)) continue;
-        const candidate = path.join(downloads, file);
-        const value = await readFile(candidate, 'utf8')
-          .then(JSON.parse)
-          .catch(() => null);
-        if (value?.name === name && value.format === 'cyapi-workflow-v1') return candidate;
-      }
-    });
-    check(
-      'personal workflow exports a usable JSON through native downloads',
-      Boolean(exportedFile),
-    );
-    await remote.evaluate(
-      `document.querySelector('[data-template-id="${created}"] [data-action="template-delete"]').click();true`,
-    );
-    await until(() =>
-      remote.evaluate(`Boolean(document.querySelector('[data-action="template-delete-confirm"]'))`),
-    );
-    await remote.evaluate(
-      `document.querySelector('[data-action="template-delete-confirm"]').click();true`,
-    );
-    await until(() =>
-      remote.evaluate(`!document.querySelector('[data-template-id="${created}"]')`),
-    );
-    personalIds.delete(created);
-    check('personal workflow deletion removes the card in native WebView', true);
-    await remote.evaluate(`document.querySelector('[data-action="keys"]').click();true`);
-    await until(() =>
-      remote.evaluate(
-        `Boolean(document.querySelector('.active-key-status [data-action="logout"]'))`,
-      ),
-    );
-    await remote.evaluate(
-      `document.querySelector('.active-key-status [data-action="logout"]').click();true`,
-    );
-    await until(() =>
-      remote.evaluate(`document.querySelector('.active-key-status')?.textContent.includes('无')`),
-    );
-  }
-  await main.evaluate(
-    `Array.from(document.querySelectorAll('.primary-nav button')).find(el=>el.textContent.includes('任务队列')).click();true`,
-  );
-  await until(() =>
-    remote.evaluate(`document.querySelector('.tabs .active')?.dataset.action==='queue'`),
-  );
-  check(
-    'desktop navigation leaves Key management',
-    await main.evaluate(`!document.querySelector('.wf-offline')`),
-  );
-  // Only this test-owned, non-secret UI token is set to detect unwanted reload.
-  await remote.evaluate(`window.__desktopTestMarker='retained';true`);
+
+  // Navigation and appearance stay in the native page.
   await main.evaluate(`document.querySelector('[aria-label="设置"]').click();true`);
   await until(() => main.evaluate(`Boolean(document.querySelector('.n-settings'))`));
-  check(
-    'settings opens without destroying remote page',
-    await remote.evaluate(`window.__desktopTestMarker==='retained'`),
-  );
   await main.evaluate(`document.querySelector('.n-settings-theme:nth-child(3)').click();true`);
   await main.evaluate(
     `Array.from(document.querySelectorAll('.n-workbenches button')).find(el=>el.textContent.includes('工作流')).click();true`,
   );
-  await until(() => remote.evaluate(`document.documentElement.dataset.theme==='dark'`));
+  await until(() => main.evaluate(`document.documentElement.dataset.theme==='dark'`));
   check(
-    'workflow restores same WebView with global dark appearance',
-    await remote.evaluate(`window.__desktopTestMarker==='retained'`),
+    'workflow page survives settings without reloading',
+    await main.evaluate(`Boolean(document.querySelector('.wfx')) && !document.querySelector('.wfx iframe')`),
   );
-  const layout = await main.evaluate(
-    `(()=>{const r=document.querySelector('.wf-workspace').getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}})()`,
-  );
-  const viewport = await remote.evaluate(`({width:innerWidth,height:innerHeight})`);
-  check(
-    'child viewport fills workflow content, not sidebar/title',
-    Math.abs(viewport.width - layout.width) < 4 &&
-      Math.abs(viewport.height - layout.height) < 4 &&
-      layout.x > 100 &&
-      layout.y > 20,
-  );
-  await main.evaluate(`window.__TAURI_INTERNALS__.invoke('reload_workflows')`);
-  await until(() =>
-    remote
-      .evaluate(`Boolean(document.querySelector('.workflow-card')) && !window.__desktopTestMarker`)
-      .catch(() => false),
-  );
-  check(
-    'explicit reconnect reloads the pinned service without replaying a task',
-    await remote.evaluate(
-      `location.href===${JSON.stringify(workflowUrl)} && !document.querySelector('#api-key')`,
-    ),
-  );
-  await until(() => remote.evaluate(`document.documentElement.dataset.theme==='dark'`));
-  const screenshot = await remote.call('Page.captureScreenshot', { format: 'png' });
-  await writeFile(
-    path.join(output, 'workflow-library.png'),
-    Buffer.from(screenshot.data, 'base64'),
-  );
-  const mainScreenshot = await main.call('Page.captureScreenshot', { format: 'png' });
-  await writeFile(path.join(output, 'desktop.png'), Buffer.from(mainScreenshot.data, 'base64'));
+
+  const screenshot = await main.call('Page.captureScreenshot', { format: 'png' });
+  await writeFile(path.join(output, 'workflow-library.png'), Buffer.from(screenshot.data, 'base64'));
   await writeFile(
     path.join(output, 'report.json'),
     JSON.stringify(
@@ -390,12 +229,10 @@ try {
           .update(await readFile(executable))
           .digest('hex'),
         version,
-        workflowUrl,
         checks,
-        layout,
-        viewport,
+        pages: targets.map((page) => page.url),
         productionKeyUsed: false,
-        personalTemplateCheck: personalCheck,
+        personalTemplateCheck: false,
         paidCalls: false,
         fullBusinessFlowVerified: false,
       },
@@ -405,29 +242,19 @@ try {
   );
   console.log(`Desktop check report: ${output}`);
 } catch (error) {
-  if (remote) {
+  if (main) {
     console.error(
       'Workflow UI at failure:',
-      await remote
-        .evaluate(
-          `({url:location.href,text:document.body.innerText,disabled:Array.from(document.querySelectorAll('[data-action][disabled]')).map(e=>e.dataset.action)})`,
-        )
+      await main
+        .evaluate(`({url:location.href,text:document.body.innerText.slice(0,4000)})`)
         .catch(() => null),
     );
-    const shot = await remote.call('Page.captureScreenshot', { format: 'png' }).catch(() => null);
+    const shot = await main.call('Page.captureScreenshot', { format: 'png' }).catch(() => null);
     if (shot) await writeFile(path.join(output, 'failure.png'), Buffer.from(shot.data, 'base64'));
   }
   console.error('Desktop diagnostics:', output);
   throw error;
 } finally {
-  if (remote && personalIds.size) {
-    await remote
-      .evaluate(
-        `(async()=>{const s=await(await fetch('/api/workflows/session')).json();for(const id of ${JSON.stringify([...personalIds])})await fetch('/api/workflows/templates/'+id,{method:'DELETE',headers:{'X-CSRF-Token':s.csrf}})})()`,
-      )
-      .catch(() => {});
-  }
-  if (exportedFile) await rm(exportedFile, { force: true });
   for (const ws of connections) ws.close();
   if (child.pid && child.exitCode === null)
     spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });

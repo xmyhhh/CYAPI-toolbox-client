@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost; frame-src 'none'; font-src 'self'; object-src 'none'; base-uri 'self'"
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost https://api.cyapi.cyou http://127.0.0.1:18733; frame-src https://api.cyapi.cyou http://127.0.0.1:18733; media-src 'self' asset: http://asset.localhost blob:; font-src 'self'; object-src 'none'; base-uri 'self'"
     }
   },
   "bundle": {

@@ -28,13 +28,29 @@ mod service;
 mod software;
 mod update;
 mod usage;
-mod workflows;
 
 use models::Request;
 use service::Service;
 use std::sync::{Arc, Mutex};
 
 struct AppService(Arc<Mutex<Result<Service, String>>>);
+
+/// Only the packaged (or dev-server) main WebView can call native commands.
+fn trusted_caller(view: &tauri::Webview) -> bool {
+    view.label() == "main" && view.url().is_ok_and(|url| local_app_url(&url))
+}
+
+fn local_app_url(url: &tauri::Url) -> bool {
+    let packaged = (url.scheme() == "http"
+        && url.host_str() == Some("tauri.localhost")
+        && url.port().is_none())
+        || (url.scheme() == "tauri" && url.host_str() == Some("localhost"));
+    let development = cfg!(debug_assertions)
+        && url.scheme() == "http"
+        && url.host_str() == Some("127.0.0.1")
+        && url.port() == Some(1420);
+    packaged || development
+}
 
 /// Network payload fetched before the service lock is taken, keyed by action.
 enum Prefetched {
@@ -334,7 +350,6 @@ pub fn run() {
         );
     }
     let builder = tauri::Builder::default().manage(AppService(Arc::new(Mutex::new(service))));
-    let builder = builder.manage(workflows::Workflows::default());
     let handler: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> =
         Box::new(tauri::generate_handler![
             toolbox,
@@ -346,15 +361,14 @@ pub fn run() {
             logging::log_frontend_error,
             diagnostics::diagnostics,
             codex_logs::codex_logs,
-            agent_logs::agent_logs,
-            workflows::workflows,
-            workflows::reload_workflows
+            agent_logs::agent_logs
         ]);
     builder
         .invoke_handler(move |invoke| {
-            // App commands have no remote caller. A child WebView shares the
-            // OS window, so checking only the window label is insufficient.
-            if !workflows::trusted_caller(invoke.message.webview_ref()) {
+            // App commands have no remote caller. Only the packaged main WebView
+            // may invoke them; the ComfyUI canvas lives in an iframe and never
+            // reaches the IPC bridge.
+            if !trusted_caller(invoke.message.webview_ref()) {
                 invoke.resolver.reject("远程页面没有本机操作权限");
                 return true;
             }
