@@ -392,7 +392,7 @@ pub fn download(
         "info",
         "update",
         format!(
-            "准备下载 {}（{} 字节，主线路超时 {PRIMARY_DOWNLOAD_TIMEOUT} 秒，源站超时 {DOWNLOAD_TIMEOUT} 秒）",
+            "准备下载 {}（{} 字节，Cloudflare 超时 {PRIMARY_DOWNLOAD_TIMEOUT} 秒，源站超时 {DOWNLOAD_TIMEOUT} 秒）",
             file.filename, file.size
         ),
     );

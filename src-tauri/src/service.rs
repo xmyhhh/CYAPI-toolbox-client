@@ -1,3 +1,5 @@
+#[path = "service/download_routes.rs"]
+mod download_routes;
 #[path = "service/integration_service.rs"]
 mod integration_service;
 use crate::{
@@ -203,12 +205,14 @@ pub(crate) fn fetch_server_url_conditional(
 }
 
 pub(crate) struct FetchOptions {
+    /// Timeout for Cloudflare (and for hosts without an origin fallback).
     pub primary_timeout: u64,
+    /// Timeout for the origin, even when it is the preferred route.
     pub fallback_timeout: u64,
     pub cancellable: bool,
 }
 
-/// Reports bytes as they arrive (and resets to zero when retrying the origin).
+/// Reports bytes as they arrive (and resets to zero when retrying another route).
 /// The caller must throttle UI/log updates, not the network reader.
 pub(crate) fn fetch_server_with_progress(
     url: Url,
@@ -217,45 +221,66 @@ pub(crate) fn fetch_server_with_progress(
     options: FetchOptions,
     progress: &mut dyn FnMut(u64),
 ) -> Result<Fetched> {
+    fetch_server_with_priority(
+        url,
+        limit,
+        etag,
+        options,
+        progress,
+        &download_routes::PRIORITY,
+        fetch_server_once,
+    )
+}
+
+// The priority and transport are injectable so tests can exercise the actual
+// request wiring without touching the shared preference or external hosts.
+fn fetch_server_with_priority(
+    url: Url,
+    limit: u64,
+    etag: Option<&str>,
+    options: FetchOptions,
+    progress: &mut dyn FnMut(u64),
+    priority: &download_routes::RoutePriority,
+    mut fetch_once: impl FnMut(
+        &Url,
+        u64,
+        u64,
+        bool,
+        Option<&str>,
+        bool,
+        &mut dyn FnMut(u64),
+    ) -> Result<Fetched>,
+) -> Result<Fetched> {
     let FetchOptions {
         primary_timeout,
         fallback_timeout,
         cancellable,
     } = options;
-    let can_fallback = can_bypass_cloudflare(&url);
     progress(0);
-    match fetch_server_once(
-        &url,
-        limit,
-        primary_timeout,
-        false,
-        etag,
-        cancellable,
-        progress,
-    ) {
-        Ok(fetched) => Ok(fetched),
-        Err(primary_error) if can_fallback && !(cancellable && crate::cancel::is_cancelled()) => {
-            crate::logging::event(
-                "warn",
-                "download",
-                format!("Cloudflare 线路请求失败，改为直连源站：{primary_error}"),
-            );
-            progress(0);
-            fetch_server_once(
+    download_routes::fetch(
+        priority,
+        can_bypass_cloudflare(&url),
+        || cancellable && crate::cancel::is_cancelled(),
+        |route, retry| {
+            if retry {
+                progress(0);
+            }
+            let direct_origin = route == download_routes::Route::Origin;
+            fetch_once(
                 &url,
                 limit,
-                fallback_timeout,
-                true,
+                if direct_origin {
+                    fallback_timeout
+                } else {
+                    primary_timeout
+                },
+                direct_origin,
                 etag,
                 cancellable,
                 progress,
             )
-            .map_err(|fallback_error| {
-                format!("主线路失败：{primary_error}；源站直连失败：{fallback_error}")
-            })
-        }
-        Err(error) => Err(error),
-    }
+        },
+    )
 }
 pub(crate) fn base_url_from(server_url: &str) -> Result<Url> {
     let mut url = Url::parse(server_url).map_err(|_| "服务端地址无效")?;
@@ -2565,6 +2590,230 @@ mod tests {
                 "不应回退：{url}"
             );
         }
+    }
+
+    #[test]
+    fn official_downloads_use_priority_and_keep_route_timeouts_and_progress() {
+        use std::collections::VecDeque;
+
+        let priority = download_routes::RoutePriority::new();
+        let mut responses = VecDeque::from([
+            (5, Err("response body failed".to_string())),
+            (
+                0,
+                Ok(Fetched {
+                    modified: false,
+                    etag: Some("\"cached\"".into()),
+                    bytes: vec![],
+                }),
+            ),
+            (2, Err("origin failed".to_string())),
+            (
+                8,
+                Ok(Fetched {
+                    modified: true,
+                    etag: None,
+                    bytes: vec![8],
+                }),
+            ),
+            (
+                7,
+                Ok(Fetched {
+                    modified: true,
+                    etag: None,
+                    bytes: vec![7],
+                }),
+            ),
+        ]);
+        let mut calls = Vec::new();
+        let mut fake_fetch = |url: &Url,
+                              limit: u64,
+                              timeout: u64,
+                              direct_origin: bool,
+                              etag: Option<&str>,
+                              cancellable: bool,
+                              progress: &mut dyn FnMut(u64)| {
+            calls.push((
+                url.host_str().unwrap().to_string(),
+                limit,
+                timeout,
+                direct_origin,
+                etag.map(str::to_string),
+                cancellable,
+            ));
+            let (received, response) = responses.pop_front().expect("unexpected request");
+            if received > 0 {
+                progress(received);
+            }
+            response
+        };
+        let options = || FetchOptions {
+            primary_timeout: 20,
+            fallback_timeout: 120,
+            cancellable: false,
+        };
+
+        let mut progress = Vec::new();
+        let cached = fetch_server_with_priority(
+            Url::parse("https://api.cyapi.cyou/api/catalog").unwrap(),
+            100,
+            Some("\"cached\""),
+            options(),
+            &mut |count| progress.push(count),
+            &priority,
+            &mut fake_fetch,
+        )
+        .unwrap();
+        assert!(!cached.modified);
+        assert_eq!(cached.etag.as_deref(), Some("\"cached\""));
+        assert_eq!(progress, [0, 5, 0]);
+
+        progress.clear();
+        let downloaded = fetch_server_with_priority(
+            Url::parse("https://tool.cyapi.cyou/downloads/app.exe").unwrap(),
+            200,
+            None,
+            options(),
+            &mut |count| progress.push(count),
+            &priority,
+            &mut fake_fetch,
+        )
+        .unwrap();
+        assert_eq!(downloaded.bytes, [8]);
+        assert_eq!(progress, [0, 2, 0, 8]);
+
+        progress.clear();
+        let next = fetch_server_with_priority(
+            Url::parse("https://api.cyapi.cyou/python/wheels/file.whl").unwrap(),
+            300,
+            None,
+            options(),
+            &mut |count| progress.push(count),
+            &priority,
+            &mut fake_fetch,
+        )
+        .unwrap();
+        assert_eq!(next.bytes, [7]);
+        assert_eq!(progress, [0, 7]);
+        assert!(responses.is_empty());
+        assert_eq!(
+            calls,
+            [
+                (
+                    SERVER_HOST.into(),
+                    100,
+                    20,
+                    false,
+                    Some("\"cached\"".into()),
+                    false
+                ),
+                (
+                    SERVER_HOST.into(),
+                    100,
+                    120,
+                    true,
+                    Some("\"cached\"".into()),
+                    false
+                ),
+                (DOWNLOAD_HOST.into(), 200, 120, true, None, false),
+                (DOWNLOAD_HOST.into(), 200, 20, false, None, false),
+                (SERVER_HOST.into(), 300, 20, false, None, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn truncated_body_demotes_route_for_the_next_real_http_download() {
+        use std::{net::TcpListener, thread};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let local = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for response in [
+                // A complete response header followed by a truncated body
+                // reproduces the failure shown in the download log.
+                "HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nabc",
+                "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ndata",
+                "HTTP/1.1 304 Not Modified\r\nETag: \"cached\"\r\nConnection: close\r\n\r\n",
+            ] {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !request.ends_with(b"\r\n\r\n") {
+                    let count = socket.read(&mut chunk).unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&chunk[..count]);
+                }
+                requests.push(String::from_utf8(request).unwrap());
+                socket.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+
+        let priority = download_routes::RoutePriority::new();
+        let mut routes = Vec::new();
+        let mut transport = |url: &Url,
+                             limit: u64,
+                             timeout: u64,
+                             direct_origin: bool,
+                             etag: Option<&str>,
+                             cancellable: bool,
+                             progress: &mut dyn FnMut(u64)| {
+            routes.push(direct_origin);
+            let local_url = Url::parse(&format!("{local}{}", url.path())).unwrap();
+            fetch_server_once(
+                &local_url,
+                limit,
+                timeout,
+                false,
+                etag,
+                cancellable,
+                progress,
+            )
+        };
+        let options = || FetchOptions {
+            primary_timeout: 2,
+            fallback_timeout: 2,
+            cancellable: false,
+        };
+        let mut progress = Vec::new();
+        let first = fetch_server_with_priority(
+            Url::parse("https://api.cyapi.cyou/python/wheels/first.whl").unwrap(),
+            100,
+            Some("\"cached\""),
+            options(),
+            &mut |count| progress.push(count),
+            &priority,
+            &mut transport,
+        )
+        .unwrap();
+        assert_eq!(first.bytes, b"data");
+        assert!(progress.windows(2).any(|counts| counts == [3, 0]));
+
+        let next = fetch_server_with_priority(
+            Url::parse("https://api.cyapi.cyou/python/wheels/next.whl").unwrap(),
+            100,
+            Some("\"cached\""),
+            options(),
+            &mut |_| {},
+            &priority,
+            &mut transport,
+        )
+        .unwrap();
+        assert!(!next.modified);
+        assert_eq!(next.etag.as_deref(), Some("\"cached\""));
+        assert_eq!(routes, [false, true, true]);
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("GET /python/wheels/first.whl "));
+        assert!(requests[1].starts_with("GET /python/wheels/first.whl "));
+        assert!(requests[2].starts_with("GET /python/wheels/next.whl "));
+        assert!(requests.iter().all(|request| request
+            .to_ascii_lowercase()
+            .contains("if-none-match: \"cached\"")));
     }
 
     #[test]
